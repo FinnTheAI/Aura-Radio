@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0c0f14" />
+    <title>Aura Radio</title>
+  </head>
+  <body>
+    <div id="scene"></div>
+    <!-- 不设 crossOrigin：外链 MP3 无 CORS 时，anonymous 会导致 MEDIA_ERR_SRC_NOT_SUPPORTED（code=4） -->
+    <audio id="player" playsinline preload="none"></audio>
+    <div id="hud">
+      <button id="boot" type="button">触碰以唤醒播放</button>
+      <button id="new-segment" type="button" class="hud-btn">换一段</button>
+      <button id="force-play" type="button" class="hud-btn" hidden>点此出声</button>
+      <div id="meta" aria-live="polite"></div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

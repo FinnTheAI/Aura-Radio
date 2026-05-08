@@ -1,0 +1,371 @@
+# Aura Radio — 机器可读 API 契约（与 ARCH_DOC §4 对齐）
+# 说明：REST 路径使用 OpenAPI 3.1；WebSocket `/stream` 以 x-websocket 扩展描述帧载荷。
+
+openapi: 3.1.0
+info:
+  title: Aura Radio HTTP API
+  version: '1.0.0'
+
+servers:
+  - url: 'http://localhost:{port}'
+    variables:
+      port:
+        default: '8080'
+
+paths:
+  /api/chat:
+    post:
+      summary: 用户文本输入 → DJ 结构化脚本并入队（实现可同步或异步拼装队列）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatResponse'
+        '400':
+          description: 请求体验证失败
+
+  /api/now:
+    get:
+      summary: 当前播放态（服务端逻辑态；播放器应结合本地漂移做平滑）
+      parameters:
+        - name: sessionId
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NowPlaying'
+
+  /api/audio/proxy:
+    get:
+      summary: 同源音频流代理（外链 http(s)）；支持 Range；流式转发，不落地缓存整文件
+      parameters:
+        - name: url
+          in: query
+          required: true
+          description: 原始外链音频绝对 URL（需编码）
+          schema:
+            type: string
+            format: uri
+      responses:
+        '200':
+          description: 完整音频流
+        '206':
+          description: Range 分段内容
+        '400':
+          description: 缺少或非法 url
+        '502':
+          description: 上游 5 秒内无可用响应或连接失败
+
+  /api/next:
+    get:
+      summary: 队列预览
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 20
+            default: 5
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NextQueue'
+
+  /api/taste:
+    get:
+      summary: 品味与情绪规则摘要
+      parameters:
+        - name: sections
+          in: query
+          description: 逗号分隔片段，如 taste,moodRules
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TasteResponse'
+
+  /api/plan/today:
+    get:
+      summary: 当日计划块（可由调度器与 routines 生成）
+      parameters:
+        - name: X-Timezone
+          in: header
+          schema:
+            type: string
+            example: Asia/Shanghai
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlanToday'
+
+  /api/queue/skip:
+    post:
+      summary: 跳过当前项并前进队列
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SkipRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkipResponse'
+
+x-websocket:
+  '/stream':
+    description: >
+      Client 与服务端双向 JSON 文本帧。
+      每条消息为对象，必须包含 `type`。
+      ARCH_DOC §4.3：`ping`、`pong`、`now_playing`、`queue`、`error`。
+    messages:
+      client_to_server:
+        - type: ping
+          payload:
+            schema:
+              type: object
+              properties:
+                schemaVersion:
+                  type: integer
+                  const: 1
+      server_to_client:
+        - type: pong
+          payload:
+            schema:
+              type: object
+              required: [schemaVersion, ts]
+              properties:
+                schemaVersion:
+                  type: integer
+                  const: 1
+                ts:
+                  type: string
+                  format: date-time
+        - type: now_playing
+          payload:
+            schema:
+              $ref: '#/components/schemas/NowPlaying'
+        - type: queue
+          payload:
+            schema:
+              type: object
+              properties:
+                items:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/QueueItem'
+        - type: error
+          payload:
+            schema:
+              type: object
+              properties:
+                message:
+                  type: string
+                traceId:
+                  type: string
+
+components:
+  schemas:
+    ChatRequest:
+      type: object
+      required: [text]
+      properties:
+        text:
+          type: string
+        sessionId:
+          type: string
+        replaceQueue:
+          type: boolean
+          description: 为 true 时清空当前播放与待播队列，仅保留本次生成的片段并立即开播。
+        clientHints:
+          type: object
+          additionalProperties: true
+
+    ChatResponse:
+      type: object
+      required: [djScript, queued, traceId]
+      properties:
+        djScript:
+          $ref: '#/components/schemas/DjScript'
+        queued:
+          type: boolean
+        traceId:
+          type: string
+
+    DjScript:
+      type: object
+      required: [schemaVersion, say, play, moodTag, segue]
+      properties:
+        schemaVersion:
+          type: integer
+        say:
+          type: string
+        play:
+          type: array
+          items:
+            $ref: '#/components/schemas/PlayInstruction'
+        moodTag:
+          type: string
+          description: >-
+            neutral | calm | focus | uplift | nostalgic（服务端非法则归为 neutral）。
+        segue:
+          type: string
+        telemetry:
+          type: object
+          properties:
+            confidence:
+              type: number
+
+    PlayInstruction:
+      type: object
+      required: [ncmSongId, reason]
+      properties:
+        ncmSongId:
+          type: string
+        reason:
+          type: string
+
+    QueueItem:
+      type: object
+      required: [kind, moodTag]
+      properties:
+        kind:
+          type: string
+          enum: [music, voice, idle]
+        title:
+          type: string
+        artist:
+          type: string
+        url:
+          type: string
+          description: 可播放的资源 URL（开发/Mock 时可为占位）
+        proxiedUrl:
+          type: string
+          description: 外链时同源代理播放 URL（`/api/audio/proxy?url=`）；Client 频谱可视化应优先使用，避免跨域
+        durationMs:
+          type: integer
+        ncmSongId:
+          type: string
+        minimaxClipId:
+          type: string
+        moodTag:
+          type: string
+
+    NowPlaying:
+      type: object
+      required: [type, positionMs, moodTag]
+      properties:
+        type:
+          type: string
+          enum: [music, voice, idle]
+        title:
+          type: string
+        artist:
+          type: string
+        url:
+          type: string
+          description: 当前可播放资源 URL（Client 单 audio 使用）
+        proxiedUrl:
+          type: string
+          description: 外链时同源代理 URL；存在则写入 `<audio>` 以启用 MediaElementSource
+        positionMs:
+          type: integer
+          description: 服务端估算播放位置（毫秒）
+        durationMs:
+          type: integer
+        moodTag:
+          type: string
+        minimaxClipId:
+          type: string
+        ncmSongId:
+          type: string
+        traceId:
+          type: string
+          description: 最近一次产生该会话态的链路 ID（若有）
+
+    NextQueue:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/QueueItem'
+
+    TasteResponse:
+      type: object
+      properties:
+        taste:
+          type: object
+          additionalProperties: true
+        moodRules:
+          type: string
+          description: mood-rules.md 原文或节选
+        updatedAt:
+          type: string
+          format: date-time
+
+    PlanBlock:
+      type: object
+      required: [label, start, end]
+      properties:
+        label:
+          type: string
+        start:
+          type: string
+        end:
+          type: string
+        moodHint:
+          type: string
+
+    PlanToday:
+      type: object
+      properties:
+        blocks:
+          type: array
+          items:
+            $ref: '#/components/schemas/PlanBlock'
+
+    SkipRequest:
+      type: object
+      properties:
+        reason:
+          type: string
+
+    SkipResponse:
+      type: object
+      required: [ok, newHead]
+      properties:
+        ok:
+          type: boolean
+        newHead:
+          nullable: true
+          oneOf:
+            - { $ref: '#/components/schemas/QueueItem' }
+            - type: 'null'
+

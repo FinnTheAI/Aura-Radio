@@ -1,0 +1,61 @@
+* {
+  box-sizing: border-box;
+}
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #0c0f14;
+  color: rgba(248, 250, 255, 0.78);
+  font-family:
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    Segoe UI,
+    sans-serif;
+}
+#scene {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+}
+#player {
+  position: absolute;
+  width: 0;
+  height: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+#hud {
+  position: fixed;
+  inset: auto 0 0 0;
+  z-index: 2;
+  padding: clamp(14px, 3vw, 28px);
+  display: grid;
+  gap: 12px;
+  justify-items: start;
+  background: linear-gradient(to top, rgba(8, 10, 16, 0.85), transparent);
+  opacity: 0;
+  transition: opacity 200ms ease;
+}
+body:hover #hud,
+body:focus-within #hud {
+  opacity: 1;
+}
+#boot,
+.hud-btn {
+  border: none;
+  background: transparent;
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0;
+}
+#meta {
+  max-width: 56ch;
+  line-height: 1.55;
+  font-size: 13px;
+}

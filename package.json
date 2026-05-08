@@ -1,0 +1,14 @@
+{
+  "name": "aura-radio",
+  "private": true,
+  "workspaces": [
+    "server",
+    "client"
+  ],
+  "scripts": {
+    "dev:server": "npm run dev -w @aura-radio/server",
+    "dev:client": "npm run dev -w @aura-radio/client",
+    "build": "npm run build -w @aura-radio/server && npm run build -w @aura-radio/client",
+    "test": "npm run test -w @aura-radio/server"
+  }
+}

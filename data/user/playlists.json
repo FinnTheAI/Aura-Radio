@@ -1,0 +1,8 @@
+{
+  "favorites": [
+    { "ncmSongId": "441491828", "note": "示例曲目 id，可替换为你的网易云歌曲 id" }
+  ],
+  "work": [
+    { "ncmSongId": "29764564", "note": "示例" }
+  ]
+}

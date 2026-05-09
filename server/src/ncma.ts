@@ -1,6 +1,6 @@
 import { config } from './config.js';
 import { log } from './logger.js';
-import { getNcmSongUrl as ytdlpGetUrl } from './ytdlp.js';
+import { getNcmSongUrl as ytdlpGetUrl, mockNcmPlayableFallback } from './ytdlp.js';
 
 export interface NcmSongMeta {
   id: string;
@@ -142,8 +142,9 @@ export async function ncmSearch(keywords: string, limit = 5): Promise<NcmSongMet
 
 export async function ncmSongUrl(ncmSongId: string): Promise<{ url: string; durationMs: number }> {
   if (config.ncmMock || !config.ncmApiBaseUrl) {
-    // Use yt-dlp to fetch real playable URL from NetEase Music
-    return ytdlpGetUrl(ncmSongId);
+    if (config.ncmMockUseYtdlp) return ytdlpGetUrl(ncmSongId);
+    /** 默认跳过 yt-dlp：避免本机地理限制、「list index out of range」与排队时长刷屏。 */
+    return mockNcmPlayableFallback();
   }
   try {
     const body = await fetchJson<NcmUrlBody>('/song/url/v1', { id: ncmSongId, level: 'exhigh' });

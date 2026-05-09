@@ -104,9 +104,14 @@ export async function getNcmSongUrl(ncmSongId: string): Promise<{ url: string; d
   }
 }
 
-function getMockUrl(): { url: string; durationMs: number } {
+/** Mock NCM 模式下的占位可播 URL（不经 yt-dlp）。 */
+export function mockNcmPlayableFallback(): { url: string; durationMs: number } {
   return {
     url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3',
     durationMs: 420_000,
   };
+}
+
+function getMockUrl(): { url: string; durationMs: number } {
+  return mockNcmPlayableFallback();
 }

@@ -14,9 +14,9 @@
 
 | 施工图要素 | Aura Radio 对应 |
 |------------|----------------|
-| BRAIN（如 Claude Code 子进程） | **MiniMax 2.6**：DJ 话术与播报音频管线（文本 + 音频流） |
+| BRAIN（Claude Code 架构） | **Claude Code 分层架构**：意图分流 → Context Builder → 大脑适配器（Executor 通过适配器调用 **MiniMax** 等底层模型）；输出 JSON 结构化脚本 |
 | MUSIC（网易云 API） | **NeteaseCloudMusicApi**：搜索、playable URL、歌词、推荐等 |
-| VOICE / 播报 | MiniMax TTS（或该平台提供的等价语音合成/流） |
+| VOICE / 播报 | MiniMax 生成 DJ 脚本（say 字段）+ 客户端 TTS（或后续接入其他语音合成） |
 | 前端 PWA + 流媒体 | **Client**：宿主页 + `<audio>` 播放队列 + **Three.js / GLSL** 频谱驱动的粒子场景 |
 | 本地状态与记忆 | **Server**：**SQLite** 持久化（`STATE_DB_PATH` 或 `$DATA_DIR/state.db`），可迁移 Postgres；与用户品味、播放史、调度痕迹 |
 
@@ -60,7 +60,7 @@
 |------|------|------|
 | Router | HTTP/WS 分发、简易指令 | WebGL / UI |
 | Taste & Mood | 文件解析、NCM 聚合、情绪标签 | 替代模型写全长独白 |
-| NCM Adapter | API 封装、URL、限速与错误；无 NeteaseCloudMusicApi 时可降级至 yt-dlp 抓取（Experimental） | 默认持久化全量原始响应 |
+| NCM Adapter | API / URL / 限速与错误；无 NeteaseCloudMusicApi 时可降级 yt-dlp；点播用语由 `NETEASE_CLI_ENABLED` 走 `ncmSearch`（不靠 npm `ncm-cli search`） | 默认持久化全量原始响应 |
 | Context Builder | 多片段 prompt 装配 | 日志泄露密钥 |
 | MiniMax Adapter | 调用、解析 JSON、重试熔断 | 耦合前端路由 |
 | Queue & Playback | now/next、播报/歌曲交错 | Three.js |
@@ -163,3 +163,39 @@
 | | | |
 
 确认后对 `schemaVersion`、`moodTag` 枚举、`/stream` 事件名做兼容性约束。
+
+---
+
+## 8. 后续迭代（Next Wave）
+
+以下工单已识别但**不属当前里程碑**，待统领排期后分配执行：
+
+| 工单 ID | 主题 | 阻塞项 | 建议负责 Agent |
+|---------|------|--------|----------------|
+| W1 | MiniMax TTS 延迟优化 | 当前 5–8s 唤醒延迟 | B 或新性能专项 |
+| W2 | 视觉体验升级 | 粒子大小/配色/视差背景；需 P10 频谱先稳定 | C 或新 UX 专项 |
+| W3 | 部署与私有化 | Docker / HTTPS / 局域网方案；本机自用目标已达成，此条为可选 | 新 DevOps 专项 |
+
+**备注**：W1 可归入 B 待命期或单独开「性能优化」线；W2 需 C 本轮关闭后重启；W3 为可选增强。
+
+---
+
+## 9. Brain 层架构（Claude Code 框架 + MiniMax 实现）
+
+**架构命名**：遵循 Claudio 施工图 Layer 2（Claude Code 架构）——意图分流 → Context Builder → 大脑适配器。
+
+**实现层**：Executor 通过适配器调用 **MiniMax** 实际生成 DJ 话术，输出同样的 JSON 脚本（say/play/moodTag/segue）。
+
+**优势**：上层规范对齐施工图（子进程/prompt 组装/JSON 输出），底层模型可插拔（Claude/MiniMax/其他）。
+
+---
+
+## 10. 实时播放接口配置（A 部分补充）
+
+**目标**：完善网易云实时播放到前端的完整链路，确保 `<audio>` 能直接消费服务端返回的 URL。
+
+**验收点**：
+- yt-dlp 或 NCM API 返回的音频 URL 能被前端直接播放（无需用户额外配置）
+- 若使用 yt-dlp：需处理外链 CORS 或走 `/api/audio/proxy` 同源代理
+- 若使用 NCM API：需配置 `NCM_API_BASE_URL` + Cookie，验证真机播放
+- 接口层：`/api/now` 返回的 `url` / `proxiedUrl` 字段需与前端 `main.ts` 消费逻辑对齐

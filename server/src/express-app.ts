@@ -4,13 +4,25 @@ import type { QueueEngine } from './queue-engine.js';
 import { newTraceId } from './queue-engine.js';
 import { loadUserBundle } from './user-data.js';
 import { assembleContext, persistUserTurn, persistAssistantJson, redactForDump } from './context-builder.js';
-import { generateDjScript } from './minimax.js';
+import { generateDjScript } from './brain.js';
 import { buildPlanToday } from './scheduler.js';
 import { handleAudioProxyGet } from './audio-proxy.js';
 import { config } from './config.js';
 import { log } from './logger.js';
 import type { StreamHub } from './stream-hub.js';
-import { buildTasteSummary } from './taste-mood.js';
+import { buildTasteSummary, normalizeMoodTag } from './taste-mood.js';
+import type { DjScript } from './types.js';
+import { extractPlayKeyword, searchSongHitsForPlayIntent, type CliSongHit } from './netease-cli-adapter.js';
+
+function djScriptFromCliHit(hit: CliSongHit, keyword: string): DjScript {
+  return {
+    schemaVersion: 1,
+    say: '',
+    play: [{ ncmSongId: hit.ncmSongId, reason: `点播「${keyword}」→ ncmSearch 首条` }],
+    moodTag: 'neutral',
+    segue: '开始播放。',
+  };
+}
 
 export function buildExpressApp(queue: QueueEngine, stream: StreamHub) {
   const app = express();
@@ -48,11 +60,63 @@ export function buildExpressApp(queue: QueueEngine, stream: StreamHub) {
       });
 
       persistUserTurn(text, traceId);
+
+      if (config.neteaseCliPlayEnabled) {
+        const keyword = extractPlayKeyword(text);
+        if (process.env.DEBUG_PLAY_INTENT === '1') {
+          log.warn('hit play-intent branch', { textUtf8Preview: JSON.stringify(text.slice(0, 48)) });
+          log.warn('keyword extracted', { kwJson: keyword === null ? null : JSON.stringify(keyword) });
+        }
+        if (keyword) {
+          try {
+            const hits = await searchSongHitsForPlayIntent(keyword, 8);
+            if (hits.length) {
+              let script = djScriptFromCliHit(hits[0], keyword);
+              let { moodTag, coerced } = normalizeMoodTag(script.moodTag);
+              if (coerced) log.warn('/api/chat cli play moodTag coerced');
+              script = { ...script, moodTag };
+              persistAssistantJson(
+                JSON.stringify({
+                  source: 'netease-ncma-play-intent',
+                  keyword,
+                  picked: hits[0],
+                  script,
+                }),
+                traceId,
+              );
+              const replaceQueue = Boolean(req.body?.replaceQueue);
+              if (replaceQueue) {
+                await queue.resetQueueAndEnqueueFromScript(script, traceId);
+              } else {
+                await queue.enqueueFromScript(script, traceId);
+              }
+              return res.json({
+                djScript: { ...script, moodTag },
+                queued: true,
+                traceId,
+              });
+            }
+            log.warn('/api/chat play-intent search empty', { keyword });
+          } catch (e) {
+            log.warn('/api/chat play-intent failed, falling through to brain', {
+              err: String(e),
+              textUtf8Preview: JSON.stringify(text.slice(0, 48)),
+            });
+          }
+        } else {
+          if (process.env.DEBUG_PLAY_INTENT === '1') {
+            log.warn('/api/chat play-intent: extractPlayKeyword returned null', {
+              textUtf8Preview: JSON.stringify(text.slice(0, 48)),
+            });
+          }
+        }
+      }
+
       const { script, normalized, usedFallback } = await generateDjScript(fragments);
       if (usedFallback) {
-        log.warn('/api/chat minimax degraded to mock', {
+        log.warn('/api/chat brain degraded to mock', {
           traceId,
-          meta: { minimax: 'mock_fallback', minimaxMock: config.minimaxMock },
+          meta: { brain: 'mock_fallback', minimaxMock: config.minimaxMock },
         });
       }
       persistAssistantJson(JSON.stringify({ script, normalized, usedFallback }), traceId);

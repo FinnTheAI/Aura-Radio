@@ -59,3 +59,21 @@ body:focus-within #hud {
   line-height: 1.55;
   font-size: 13px;
 }
+#chat-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+#chat-input {
+  flex: 1;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: inherit;
+  font-size: 13px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  outline: none;
+}
+#chat-input:focus {
+  border-color: rgba(255, 255, 255, 0.4);
+}

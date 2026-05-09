@@ -17,6 +17,8 @@ const newSegmentBtn = document.querySelector('#new-segment') as HTMLButtonElemen
 const forcePlayBtn = document.querySelector('#force-play') as HTMLButtonElement;
 const sceneEl = document.querySelector('#scene') as HTMLElement;
 const audioEl = document.querySelector('#player') as HTMLAudioElement;
+const chatInput = document.querySelector('#chat-input') as HTMLInputElement;
+const chatSendBtn = document.querySelector('#chat-send') as HTMLButtonElement;
 
 /** 极短静音 WAV（data URL），用于在用户点击的同一同步栈里触发一次合法 play，降低后续被策略拦截的概率。 */
 const SILENT_WAV =
@@ -74,7 +76,7 @@ function tryAttachAnalyserForUrl(absUrl: string) {
     gain.gain.value = 1;
     analyser = audioCtx.createAnalyser();
     analyser.fftSize = 512;
-    analyser.smoothingTimeConstant = 0.85;
+    analyser.smoothingTimeConstant = 0.76;
     freqBin = new Uint8Array(analyser.frequencyBinCount);
     src.connect(gain);
     gain.connect(analyser);
@@ -167,12 +169,12 @@ function bandsFromAnalyser(): { low: number; high: number } {
   const split = Math.floor(n * 0.12);
   for (let i = 0; i < split; i++) lowSum += freqBin[i]!;
   for (let i = split; i < n; i++) highSum += freqBin[i]!;
-  const low = (lowSum / (255 * split)) * 1.25;
-  const high = (highSum / Math.max(1, (n - split) * 255)) * 1.55;
-  return {
-    low: Math.min(1, low),
-    high: Math.min(1, high),
-  };
+  const rawLow = lowSum / (255 * Math.max(1, split));
+  const rawHigh = highSum / (255 * Math.max(1, n - split));
+  /** 提升可视动态范围：轻度 gamma + 增益（仍钳制到 1） */
+  const low = Math.min(1, Math.pow(Math.min(1, rawLow * 2.05), 0.88));
+  const high = Math.min(1, Math.pow(Math.min(1, rawHigh * 2.35), 0.9));
+  return { low, high };
 }
 
 function bandsAmbient(): { low: number; high: number } {
@@ -298,6 +300,24 @@ forcePlayBtn.addEventListener('click', async () => {
   } catch (e) {
     metaEl.textContent += `\n点此出声仍失败：${String(e)}`;
   }
+});
+
+chatSendBtn.addEventListener('click', async () => {
+  const text = chatInput.value.trim();
+  if (!text) return;
+  chatInput.value = '';
+  userAllowedPlayback = true;
+  await resumeAudioContextIfAny();
+  try {
+    const body = await postDjChat(text, false);
+    await pullNowAndPlay(body.traceId);
+  } catch (e) {
+    metaEl.textContent = `发送失败：${String(e)}`;
+  }
+});
+
+chatInput.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Enter') chatSendBtn.click();
 });
 
 window.addEventListener('keydown', async (ev) => {

@@ -13,6 +13,33 @@ function parseBool(v: string | undefined, defaultValue: boolean): boolean {
 
 const repoRoot = path.resolve(__dirname, '..', '..');
 
+/**
+ * `NCM_API_BASE_URL` 只需在 `.env` 里写一次即长期生效。
+ * 若留空且设 `NCM_ALLOW_LOCAL_DEFAULT=1`，开发机假定代理跑在 `127.0.0.1:3000`（可用 `NCM_LOCAL_FALLBACK_PORT` 覆盖）。
+ */
+function resolveNcmApiBase(): string {
+  const fromEnv = (process.env.NCM_API_BASE_URL ?? '').replace(/\/$/, '').trim();
+  if (fromEnv) return fromEnv;
+  if (parseBool(process.env.NCM_ALLOW_LOCAL_DEFAULT, false)) {
+    const p = Number(process.env.NCM_LOCAL_FALLBACK_PORT ?? 3000);
+    const port = Number.isFinite(p) && p > 0 && p < 65536 ? Math.floor(p) : 3000;
+    return `http://127.0.0.1:${port}`;
+  }
+  return '';
+}
+
+const resolvedNcmApiBase = resolveNcmApiBase();
+
+/** 拼接代理请求 Cookie：`NCM_UPSTREAM_COOKIE` + 可选 `MUSIC_U`。勿提交真实值。 */
+export function mergeNcmCookies(): string {
+  const upstream = (process.env.NCM_UPSTREAM_COOKIE ?? '').trim();
+  const rawU = (process.env.MUSIC_U ?? '').trim();
+  if (!rawU) return upstream;
+  const token = rawU.includes('=') ? rawU : `MUSIC_U=${rawU}`;
+  if (/MUSIC_U\s*=/.test(upstream)) return upstream;
+  return upstream ? `${upstream}; ${token}` : token;
+}
+
 export const config = {
   port: Number(process.env.PORT ?? 8080),
   nodeEnv: process.env.NODE_ENV ?? 'development',
@@ -27,8 +54,9 @@ export const config = {
   stateDbPath: process.env.STATE_DB_PATH
     ? path.resolve(process.cwd(), process.env.STATE_DB_PATH)
     : path.join(repoRoot, 'data', 'state.db'),
-  ncmApiBaseUrl: (process.env.NCM_API_BASE_URL ?? '').replace(/\/$/, ''),
-  ncmMock: parseBool(process.env.NCM_MOCK, !process.env.NCM_API_BASE_URL),
+  ncmApiBaseUrl: resolvedNcmApiBase,
+  /** 解析后非空且无显式关闭时等价于「可走真实 NCM HTTP」；见 `resolveNcmApiBase`。 */
+  ncmMock: parseBool(process.env.NCM_MOCK, !resolvedNcmApiBase),
   /**
    * When `ncmMock` is true (no NeteaseCloudMusicApi URL): by default use fast placeholder audio only.
    * Set `NCM_MOCK_USE_YTDLP=1` to experimentally resolve real URLs via yt-dlp (slow / geo-sensitive).
@@ -41,6 +69,11 @@ export const config = {
    * Never commit real cookie values.
    */
   ncmUpstreamCookie: (process.env.NCM_UPSTREAM_COOKIE ?? '').trim(),
+  /**
+   * 网易云登录态 Cookie 片段（常为 `MUSIC_U=...`，也可写成完整片段）。会与 `NCM_UPSTREAM_COOKIE` 合并发往代理。
+   * 实际账号 UID 仍可设 `NETEASE_UID`，否则服务端用 `/user/account` 推断。
+   */
+  neteaseUid: (process.env.NETEASE_UID ?? '').trim(),
   /** MiniMax API 基座 URL */
   minimaxApiUrl: (process.env.MINIMAX_API_URL ?? '').replace(/\/$/, ''),
   /** MiniMax API Key，勿提交仓库 */
@@ -56,8 +89,7 @@ export const config = {
   logLevel: process.env.LOG_LEVEL ?? 'info',
 
   /**
-   * 「播放 xxx」点播：服务端用 `ncmSearch`（`NCM_API_BASE_URL`/mock），**不使用** `@music163/ncm-cli` 的 search
-   *（公开发行版暂无该命令）。CLI 仍可本机 Skills / TUI 使用。
+   *（可选）本机点播抢答：**默认关闭**。产品以 MiniMax Brain 产出 `play[]` 为主；仅调试或遥控器场景设 `NETEASE_CLI_ENABLED=1`。
    */
   neteaseCliPlayEnabled: parseBool(process.env.NETEASE_CLI_ENABLED, false),
 };

@@ -10,5 +10,8 @@
     "dev:client": "npm run dev -w @aura-radio/client",
     "build": "npm run build -w @aura-radio/server && npm run build -w @aura-radio/client",
     "test": "npm run test -w @aura-radio/server"
+  },
+  "devDependencies": {
+    "playwright": "^1.59.1"
   }
 }

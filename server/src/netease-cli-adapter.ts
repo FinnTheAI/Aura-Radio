@@ -1,10 +1,7 @@
 /**
- * 点播意图：从自然语言抽出关键字后，经由 `ncma.ts` 的 `ncmSearch` 拉歌并入队。
- *
- * **重要**：npm 发布的 `@music163/ncm-cli`（例如 0.1.x）**没有**稳定的 `search` 子命令可给服务端 spawn；
- * 文档/PDF 里出现的 `search` 与公开发行版不一致。本机 **`ncm-cli` 仍可**用于 Skills / `play`/`tui`，
- * 但 **Aura Server 不负责** CLI 检索；若要「播放晴天」对上真实曲库，需配置 **`NCM_API_BASE_URL`**
- *（或其它与 `ncmSearch` 兼容的数据源）。
+ * 点播意图（可选）：`NETEASE_CLI_ENABLED=1` 时用关键字走 `ncmSearch`。**产品默认 MiniMax-first**（此开关应为 0），
+ * 由 Brain 输出的 `play[]` 驱动队列；仅遥控器/调试时开启本路径。
+ * npm `@music163/ncm-cli` 无可用 `search` 子命令供服务端 spawn，曲库检索走 `ncma` HTTP。
  */
 
 import { ncmSearch } from './ncma.js';

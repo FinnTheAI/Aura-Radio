@@ -111,48 +111,85 @@ export class QueueEngine {
   }
 
   async enqueueFromScript(script: DjScript, traceId: string) {
-    const items: QueueItem[] = [];
+    if (script.play.length === 0) return;
 
-    const voiceAllowed = script.moodTag !== 'focus' && script.say.trim().length > 0;
-    if (voiceAllowed) {
-      items.push({
-        kind: 'voice',
-        title: 'Aura DJ',
-        durationMs: 18_000,
-        url: config.minimaxMockVoiceUrl,
-        moodTag: script.moodTag,
-        minimaxClipId: `clip-${traceId.slice(0, 8)}`,
-        traceId,
-      });
-    }
+    /** 裸播单首：跳过 voice lead / 全部预拉，先拿到 URL 即出播放器。 */
+    const [first, ...rest] = script.play;
+    const { url, durationMs } = await ncmSongUrl(first.ncmSongId);
 
-    for (const p of script.play) {
-      const meta = await ncmSongDetail(p.ncmSongId);
-      const { url, durationMs } = await ncmSongUrl(p.ncmSongId);
-      items.push({
-        kind: 'music',
-        title: meta.name,
-        artist: meta.artists.join(' / '),
-        url,
-        durationMs: Math.min(durationMs, 600_000),
-        ncmSongId: p.ncmSongId,
-        moodTag: script.moodTag,
-        traceId,
-      });
-    }
-
-    if (items.length === 0) {
-      items.push({
-        kind: 'idle',
-        durationMs: 3_000,
-        moodTag: script.moodTag,
-        traceId,
-      });
-    }
-
-    this.pending.push(...items);
+    this.pending.push({
+      kind: 'music',
+      title: `ncm:${first.ncmSongId}`,
+      artist: '加载中…',
+      url,
+      durationMs: Math.min(durationMs, 600_000),
+      ncmSongId: first.ncmSongId,
+      moodTag: script.moodTag,
+      traceId,
+    });
     this.emit();
     if (!this.active) this.popNext();
+
+    /** 后台补 metadata + 预载 rest（若有）。 */
+    void this.loadRestAsNeeded(rest, script.moodTag, traceId, first.ncmSongId);
+  }
+
+  private async loadRestAsNeeded(
+    rest: DjScript['play'],
+    moodTag: MoodTag,
+    traceId: string,
+    firstSongId: string,
+  ) {
+    if (rest.length === 0) {
+      /** 仅一首时仍异步补全第一首元数据，避免出现长期「ncm:id + 加载中…」 */
+      void this.hydratePlayingTitle(firstSongId, moodTag, traceId);
+      return;
+    }
+    try {
+      const items: QueueItem[] = await Promise.all(
+        rest.map(async (p) => {
+          const meta = await ncmSongDetail(p.ncmSongId);
+          const { url: u, durationMs: d } = await ncmSongUrl(p.ncmSongId);
+          return {
+            kind: 'music' as const,
+            title: meta.name,
+            artist: meta.artists.join(' / '),
+            url: u,
+            durationMs: Math.min(d, 600_000),
+            ncmSongId: p.ncmSongId,
+            moodTag,
+            traceId,
+          };
+        }),
+      );
+      this.pending.push(...items);
+      this.emit();
+      if (!this.active) this.popNext();
+    } catch (e) {
+      log.warn('loadRestAsNeeded failed', { err: String(e) });
+    }
+    void this.hydratePlayingTitle(firstSongId, moodTag, traceId);
+  }
+
+  /** 用 `song/detail` 覆盖当前正在播放条目的占位标题（若仍是首条）。 */
+  private async hydratePlayingTitle(ncmSongId: string, moodTag: MoodTag, traceId: string) {
+    try {
+      const meta = await ncmSongDetail(ncmSongId);
+      const cur = this.active;
+      if (
+        !cur ||
+        cur.traceId !== traceId ||
+        cur.item.kind !== 'music' ||
+        cur.item.ncmSongId !== ncmSongId
+      ) {
+        return;
+      }
+      cur.item.title = meta.name;
+      cur.item.artist = meta.artists.join(' / ');
+      this.emit();
+    } catch (e) {
+      log.warn('hydratePlayingTitle failed', { ncmSongId, err: String(e) });
+    }
   }
 
   /** 丢弃当前与排队项，立即按新脚本重建队列（用于「换一段」）。 */

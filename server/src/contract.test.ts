@@ -33,6 +33,16 @@ describe('HTTP contract (ARCH_DOC / CONTRACT.yaml)', () => {
     expect(res.body.taste).toBeTruthy();
     expect(typeof res.body.moodRules).toBe('string');
     expect(typeof res.body.updatedAt).toBe('string');
+    expect(res.body.cloud).toBeTruthy();
+    expect(typeof res.body.cloud.configured).toBe('boolean');
+    expect(Array.isArray(res.body.cloud.artistsTop10)).toBe(true);
+  });
+
+  it('GET /api/taste?source=cloud', async () => {
+    const res = await request(app).get('/api/taste').query({ source: 'cloud', refresh: 'false' }).expect(200);
+    expect(res.body.source).toBe('cloud');
+    expect(res.body.cloud).toBeTruthy();
+    expect(Array.isArray(res.body.cloud.artistsTop10)).toBe(true);
   });
 
   it('POST /api/chat → traceId + djScript', async () => {

@@ -60,7 +60,7 @@
 |------|------|------|
 | Router | HTTP/WS 分发、简易指令 | WebGL / UI |
 | Taste & Mood | 文件解析、NCM 聚合、情绪标签 | 替代模型写全长独白 |
-| NCM Adapter | API / URL / 限速与错误；无 NeteaseCloudMusicApi 时可降级 yt-dlp；点播用语由 `NETEASE_CLI_ENABLED` 走 `ncmSearch`（不靠 npm `ncm-cli search`） | 默认持久化全量原始响应 |
+| NCM Adapter | 上游 HTTP（`NCM_API_BASE_URL` 或 `NCM_ALLOW_LOCAL_DEFAULT`）为 MiniMax 输出的 `ncmSongId` 取元数据/外链；可降级 yt-dlp；`NETEASE_CLI_ENABLED` 本机抢答 **默认关**（Brain 优先） | 默认持久化全量原始响应 |
 | Context Builder | 多片段 prompt 装配 | 日志泄露密钥 |
 | MiniMax Adapter | 调用、解析 JSON、重试熔断 | 耦合前端路由 |
 | Queue & Playback | now/next、播报/歌曲交错 | Three.js |

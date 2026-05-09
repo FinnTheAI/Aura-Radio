@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { MoodTag } from './types.js';
+import type { MoodTag, NowPlaying } from './types.js';
 import { insertMessage, insertPlayHistory, recentMessages } from './db.js';
 import { deriveSessionMood } from './taste-mood.js';
 import type { UserBundle } from './user-data.js';
@@ -11,9 +11,28 @@ export interface ContextFragments {
   systemPrompt: string;
   userCorpus: string;
   environment: string;
+  listeningNow: string;
   memory: string;
   userInput: string;
   executionTrace: string;
+}
+
+/** 队列当前态，约束模型按「这一刻在听什么」写 say，而非万能模板 */
+export function buildListeningNow(np: NowPlaying): string {
+  if (np.type === 'idle') {
+    return 'listeningNow：空闲（无刻度音轨）。用户可能刚进线或刚切段，say 可当欢迎/接在场情绪。';
+  }
+  if (np.type === 'voice') {
+    return 'listeningNow：DJ 口播段进行中。say 应与这一氛围顺接（换题、递进、轻描反应），勿写与收听现场无关的长串套话。';
+  }
+  const title = np.title ?? '未知';
+  const who = np.artist ? ` / ${np.artist}` : '';
+  const sid = np.ncmSongId ? ` ncmSongId=${np.ncmSongId}` : '';
+  const pace =
+    np.durationMs && np.durationMs > 0
+      ? `约进度 ${Math.min(99, Math.round((np.positionMs / np.durationMs) * 100))}%`
+      : '';
+  return `listeningNow：音乐「${title}」${who}${sid}${pace ? `，${pace}` : ''}。say 必须把「用户本条话 + 这首正在发生的事」合在一起即兴组织（接引 / 点名动机 / 轻吐槽均可），禁用与此刻无关的固定开场。`;
 }
 
 export function loadDjPersona(): string {
@@ -64,6 +83,8 @@ export function assembleContext(input: {
   toolResults?: string;
   now?: Date;
   timezone?: string;
+  /** 通常为 `queue.getNow()`：供 say 对齐实时收听画面 */
+  nowPlaying?: NowPlaying;
 }): ContextFragments {
   const now = input.now ?? new Date();
   const traceSeed = randomUUID();
@@ -71,6 +92,9 @@ export function assembleContext(input: {
     systemPrompt: loadDjPersona(),
     userCorpus: buildUserCorpus(input.user),
     environment: buildEnvironment(now, { timezone: input.timezone }),
+    listeningNow: input.nowPlaying
+      ? buildListeningNow(input.nowPlaying)
+      : 'listeningNow：未挂载队列快照（仅本条请求）；say 仍需结合 userInput / environment / memory 写本回合口语，禁用万能模板。',
     memory: buildMemory(input.userText, traceSeed),
     userInput: [
       `用户原文：${input.userText}`,

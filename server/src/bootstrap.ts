@@ -39,7 +39,7 @@ export function bootstrap() {
     log.info(`Aura Radio server listening http://localhost:${config.port}`, {
       cwd: process.cwd(),
       sqlite: config.stateDbPath,
-      ncmApiBase: config.ncmApiBaseUrl ? '[set]' : '[empty]',
+      ncmApiBase: config.ncmApiBaseUrl || '[empty]',
       /** 为 true 时「播放xxx」才走 ncmSearch；缺省 false，仅改 .env 须重启进程才生效 */
       playIntentNcmSearch: config.neteaseCliPlayEnabled,
     });

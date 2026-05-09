@@ -63,11 +63,12 @@ export function mountAuraScene(
         vec3 p = position;
         float lf = clamp(uLow + uAmbientBreath * 0.35, 0.0, 1.35);
         float hf = clamp(uHigh, 0.0, 1.35);
-        float pulse = 1.0 + 0.22 * lf * sin(uTime * 1.85 + length(p)*2.35);
-        float flicker = 1.0 + 0.18 * hf * sin(uTime * 6.1 + dot(p,p)*4.35);
-        p *= pulse * flicker * (0.86 + uAmbientBreath * 0.25);
+        float pulse = 1.0 + 0.44 * lf * sin(uTime * 1.85 + length(p)*2.35);
+        float flicker = 1.0 + 0.36 * hf * sin(uTime * 6.1 + dot(p,p)*4.35);
+        float cloudBreath = 0.74 + uAmbientBreath * 0.26 + lf * 0.58;
+        p *= pulse * flicker * cloudBreath;
         gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
-        gl_PointSize = mix(2.45, 3.95, lf);
+        gl_PointSize = mix(2.05, 5.35, lf);
       }
     `,
     fragmentShader: `
@@ -83,7 +84,7 @@ export function mountAuraScene(
         float lo = clamp(uLow, 0.0, 1.0);
         vec3 col = mix(vec3(0.075, 0.10, 0.15), vec3(0.45, 0.85, 0.95), 0.62 * lo + hi * 0.28);
         col += vec3(0.12, 0.18, 0.08) * sin(uTime + gl_PointCoord.x * 24.0) * hi;
-        float a = soft * mix(0.22, 0.78, clamp(lo + hi, 0.0, 1.0));
+        float a = soft * mix(0.18, 0.92, clamp(lo * 0.65 + hi * 0.85, 0.0, 1.0));
         gl_FragColor = vec4(col, a);
       }
     `,
@@ -95,8 +96,8 @@ export function mountAuraScene(
   const tick = () => {
     uniforms.uTime.value += 1 / 60;
     const { low, high } = getBands();
-    uniforms.uLow.value = THREE.MathUtils.lerp(uniforms.uLow.value, low, 0.18);
-    uniforms.uHigh.value = THREE.MathUtils.lerp(uniforms.uHigh.value, high, 0.26);
+    uniforms.uLow.value = THREE.MathUtils.lerp(uniforms.uLow.value, low, 0.34);
+    uniforms.uHigh.value = THREE.MathUtils.lerp(uniforms.uHigh.value, high, 0.42);
     uniforms.uAmbientBreath.value = ambientOnly() ? 1 : 0;
     const { w, h } = size();
     renderer.setSize(w, h);

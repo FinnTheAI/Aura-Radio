@@ -1,23 +1,56 @@
 import { z } from 'zod';
-import { config } from './config.js';
+import { spawn } from 'node:child_process';
 import { log } from './logger.js';
 import type { DjScript, MoodTag } from './types.js';
 import { deriveSessionMood, normalizeMoodTag } from './taste-mood.js';
 import type { ContextFragments } from './context-builder.js';
+import { config } from './config.js';
+import { logBrainClaudeSession } from './db.js';
 
-const DjScriptSchema = z.object({
-  schemaVersion: z.coerce.number(),
-  say: z.coerce.string(),
-  play: z.array(
-    z.object({
-      ncmSongId: z.coerce.string(),
-      reason: z.coerce.string(),
-    }),
-  ),
-  moodTag: z.coerce.string(),
-  segue: z.coerce.string(),
-  telemetry: z.object({ confidence: z.number().optional() }).optional(),
-});
+/** 避免 `z.coerce.string()` 把缺失字段变成字面量 "undefined" / "null" */
+function cleanDjText(v: unknown, fallback = ''): string {
+  if (v === undefined || v === null) return fallback;
+  const s = String(v).trim();
+  if (!s) return fallback;
+  const low = s.toLowerCase();
+  if (low === 'undefined' || low === 'null' || low === 'nan') return fallback;
+  return s;
+}
+
+const DjScriptSchema = z
+  .object({
+    schemaVersion: z.preprocess((v) => {
+      if (typeof v === 'number' && Number.isFinite(v)) return Math.max(1, Math.trunc(v));
+      const t = typeof v === 'string' ? v.trim().toLowerCase() : '';
+      if (t === 'nan' || t === 'undefined' || t === 'null' || t === '') return 1;
+      const n = Number(v);
+      if (!Number.isFinite(n) || Number.isNaN(n)) return 1;
+      return Math.max(1, Math.trunc(n));
+    }, z.number().int()),
+    say: z.preprocess((v) => cleanDjText(v), z.string()),
+    play: z.preprocess((v) => (Array.isArray(v) ? v : []), z.array(
+      z.object({
+        ncmSongId: z.preprocess((x) => cleanDjText(x, '0'), z.string()),
+        reason: z.preprocess((x) => cleanDjText(x, '推荐'), z.string()),
+        discoveryNote: z.preprocess((x) => cleanDjText(x), z.string().optional()),
+      }),
+    )),
+    moodTag: z.preprocess((v) => cleanDjText(v, 'neutral'), z.string()),
+    segue: z.preprocess((v) => cleanDjText(v, '我们继续。'), z.string()),
+    telemetry: z.object({ confidence: z.number().optional() }).optional(),
+  })
+  .superRefine((data, ctx) => {
+    for (let i = 0; i < data.play.length; i++) {
+      const p = data.play[i];
+      if (!p || !String(p.discoveryNote ?? '').trim()) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['play', i, 'discoveryNote'],
+          message: '每项 play 必须含非空 discoveryNote（mmx 搜索驱动）',
+        });
+      }
+    }
+  });
 
 function sleep(ms: number) {
   return new Promise<void>((r) => setTimeout(r, ms));
@@ -38,6 +71,23 @@ function extractJsonObjectSlice(text: string): string {
 function unwrapDjPayload(obj: unknown): unknown {
   if (!obj || typeof obj !== 'object') return obj;
   const o = obj as Record<string, unknown>;
+
+  // Claude CLI / Claude Code：`result` 可能是裸 JSON、` ```json {...} ``` `、或其它包装
+  if (typeof o.result === 'string') {
+    let inner = o.result.trim();
+    if (inner.startsWith('```')) {
+      inner = inner.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
+    }
+    if (inner.startsWith('{')) {
+      try {
+        const parsed = JSON.parse(inner);
+        if (parsed && typeof parsed === 'object') return unwrapDjPayload(parsed);
+      } catch {
+        /** */
+      }
+    }
+  }
+
   if (
     typeof o.schemaVersion !== 'undefined' &&
     Array.isArray(o.play) &&
@@ -56,10 +106,80 @@ function unwrapDjPayload(obj: unknown): unknown {
   return obj;
 }
 
+/** 容错：unwrap 后对顶层字段做小修，避免模型输出 `"NaN"` / 缺 play 导致整段降级 Mock。 */
+function sanitizeDjPayloadTopLevel(payload: unknown): unknown {
+  if (!payload || typeof payload !== 'object') return payload;
+  const o = payload as Record<string, unknown>;
+  const next = { ...o };
+
+  next.say = cleanDjText(next.say, '');
+  next.segue = cleanDjText(next.segue, '我们继续听下去。');
+  next.moodTag = cleanDjText(next.moodTag, 'neutral');
+
+  if (!Array.isArray(next.play)) next.play = [];
+
+  const sv = next.schemaVersion;
+  if (
+    sv === undefined ||
+    sv === null ||
+    (typeof sv === 'string' && ['nan', 'null', 'undefined', ''].includes(String(sv).trim().toLowerCase()))
+  ) {
+    next.schemaVersion = 1;
+  } else if (typeof sv === 'string') {
+    // Fix "NaN"/"Infinity" strings that can come from JSON.stringify of invalid values
+    const lower = sv.trim().toLowerCase();
+    if (lower === 'nan' || lower === 'infinity' || lower === '-infinity') {
+      next.schemaVersion = 1;
+    }
+  }
+
+  next.play = (next.play as unknown[]).map((row, i) => {
+    if (!row || typeof row !== 'object')
+      return {
+        ncmSongId: `0_${i}`,
+        reason: '推荐曲目',
+        discoveryNote: '（模型缺省条目；服务端按 NCM 兜底）',
+      };
+    const r = row as Record<string, unknown>;
+    const rawNote = cleanDjText(r.discoveryNote);
+    const rawReason = cleanDjText(r.reason, '推荐');
+    return {
+      ncmSongId: r.ncmSongId != null ? String(r.ncmSongId) : '0',
+      reason: rawReason,
+      discoveryNote:
+        rawNote ||
+        `（无 discoveryNote）${rawReason} ${cleanDjText(r.ncmSongId, '')}`.slice(0, 200),
+    };
+  });
+
+  return next;
+}
+
 function parseDjJson(text: string): DjScript {
-  const jsonStr = extractJsonObjectSlice(text);
+  const trimmed = text.trim();
+
+  /** 优先整段解析 Claude Code `--output-format json` 外层包，再走 unwrap（支持 result 内 ```json） */
+  if (trimmed.startsWith('{')) {
+    try {
+      const root = JSON.parse(trimmed) as unknown;
+      const unwrapped = unwrapDjPayload(root);
+      if (
+        unwrapped &&
+        typeof unwrapped === 'object' &&
+        ('schemaVersion' in unwrapped || 'play' in unwrapped)
+      ) {
+        const payload = sanitizeDjPayloadTopLevel(unwrapped);
+        return DjScriptSchema.parse(payload) as DjScript;
+      }
+    } catch {
+      /** 回退到「截取首个对象」路径 */
+    }
+  }
+
+  let jsonStr = extractJsonObjectSlice(text);
+  jsonStr = jsonStr.replace(/"NaN"/g, '"1"').replace(/"Infinity"/g, '"1"').replace(/"-Infinity"/g, '"1"');
   const obj = JSON.parse(jsonStr) as unknown;
-  const payload = unwrapDjPayload(obj);
+  const payload = sanitizeDjPayloadTopLevel(unwrapDjPayload(obj));
   return DjScriptSchema.parse(payload) as DjScript;
 }
 
@@ -73,6 +193,7 @@ function mockScript(fragments: ContextFragments): DjScript {
       {
         ncmSongId: pick,
         reason: `与「${session.explain}」一致的占位选曲。`,
+        discoveryNote: 'brainMock：无 mmx 编排',
       },
     ],
     moodTag: session.moodTag,
@@ -81,70 +202,118 @@ function mockScript(fragments: ContextFragments): DjScript {
   };
 }
 
-/** 官方路径：https://api.minimax.chat/v1/text/chatcompletion_v2 */
-function minimaxChatCompletionEndpoint(baseFromEnv: string): string | null {
-  const raw = baseFromEnv.trim().replace(/\/$/, '');
-  if (!raw) return null;
-  if (/\/text\/chatcompletion_v2$/i.test(raw)) return raw;
-  if (/\/v1$/i.test(raw)) return `${raw}/text/chatcompletion_v2`;
-  return `${raw}/v1/text/chatcompletion_v2`;
+/** 组装完整 prompt：dj-persona.md + 七片段（含 `# songCandidates`） */
+function assembleFullPrompt(fragments: ContextFragments): string {
+  return [
+    fragments.systemPrompt,
+    '',
+    '---',
+    '',
+    '# userCorpus',
+    fragments.userCorpus,
+    '',
+    '# environment',
+    fragments.environment,
+    '',
+    '# listeningNow',
+    fragments.listeningNow,
+    '',
+    '# songCandidates',
+    fragments.songCandidates,
+    '',
+    '# memory',
+    fragments.memory,
+    '',
+    '# userInput',
+    fragments.userInput,
+    '',
+    '# executionTrace',
+    fragments.executionTrace,
+    '',
+    '# mmxCliGate',
+    [
+      `唯一允许的联网检索：MiniMax **mmx-cli**（经由 gate 校验与审计）。**禁止** WebSearch / Brave / MCP。`,
+      `请用 Bash 仅执行下列形式之一（MINIMAX_API_KEY 勿写入仓库，可用环境变量注入）：`,
+      `  node "${config.mmxCliGateJsPath.replace(/\\/g, '\\\\')}" search query "<检索词>" --output json`,
+      `  node "${config.mmxCliGateJsPath.replace(/\\/g, '\\\\')}" text chat "<提示>" （必要时）`,
+      `gate 内等价命令须匹配：^npx\\\\s+(-y\\\\s+)?mmx-cli\\\\s+(search|text\\\\s+chat|chat)\\\\b`,
+      `拿到 mmx-cli 返回的歌名/艺人线索后写入 discoveryNote；最终 JSON 的 play 每项含 discoveryNote（必填）。`,
+    ].join('\n'),
+    '',
+    '---',
+    '',
+    '硬性输出约束：',
+    '- `say` / `segue` / `moodTag` 必须是**自然人话字符串**，禁止使用 JSON 字面量 null、禁止使用英文单词 undefined/null 当作字符串内容。',
+    '- `play` 须含 **3–4 首**（Focus 可调少但仍须非空时每条均有 discoveryNote）；`discoveryNote` 写「用于网易云搜索的中文或英文短语」，可与 mmx 结果合并；若 mmx 仅词典释义，则用「日文氛围民谣」「类似 XX 艺人的冷门曲」这类**可拿去云搜的关键词**填满 discoveryNote。',
+    '',
+    '请严格输出单一 JSON 对象（不要 Markdown 围栏），包含 schemaVersion、say、play、 moodTag、segue、telemetry 字段。',
+  ].join('\n');
 }
 
-function resolveMinimaxEndpoint(): string | null {
-  const fromEnv = minimaxChatCompletionEndpoint(config.minimaxApiUrl);
-  if (fromEnv) return fromEnv;
-  if (!config.minimaxMock && config.minimaxApiKey.trim())
-    return minimaxChatCompletionEndpoint('https://api.minimax.chat/v1');
-  return null;
+/** 子进程调用本地 Claude CLI */
+async function callLocalClaude(fragments: ContextFragments): Promise<string> {
+  const prompt = assembleFullPrompt(fragments);
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      'claude',
+      ['--print', '--input-format', 'text', '--permission-mode', 'bypassPermissions'],
+      {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        timeout: 120000,
+      },
+    );
+
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout.on('data', (data: Buffer) => { stdout += data.toString('utf-8'); });
+    child.stderr.on('data', (data: Buffer) => { stderr += data.toString('utf-8'); });
+
+    child.on('error', (err) => {
+      reject(new Error(`Claude CLI spawn failed: ${err.message}`));
+    });
+
+    child.on('close', (code) => {
+      try {
+        logBrainClaudeSession(stderr, stdout);
+      } catch { /* */ }
+      if (code !== 0) {
+        reject(new Error(`Claude CLI exit ${code}: ${stderr.slice(0, 500)}`));
+        return;
+      }
+      if (!stdout.trim()) {
+        reject(new Error('Claude CLI returned empty stdout'));
+        return;
+      }
+      resolve(stdout);
+    });
+
+    // 通过 stdin 传入 prompt，避免命令行参数长度超限（ENAMETOOLONG）
+    child.stdin.write(prompt, () => {
+      child.stdin.end();
+    });
+  });
 }
 
-interface MiniMaxChatCompletionJson {
-  choices?: Array<{ message?: { content?: unknown } & Record<string, unknown> }>;
-  base_resp?: { status_code?: number; status_msg?: string };
-}
+/** 备用：HTTP 调用 MiniMax（仅当本地 Claude/mm 编排不可用；**不**使用 Brave/MCP，亦非 mmx-cli 的替代搜索通道）。 */
+async function callMiniMaxHttp(fragments: ContextFragments): Promise<string> {
+  const endpoint = config.minimaxApiUrl || 'https://api.minimax.chat/v1/text/chatcompletion_v2';
 
-function messageContentToString(message: Record<string, unknown> | undefined): string | null {
-  if (!message) return null;
-  const c = message.content;
-  if (typeof c === 'string' && c.trim()) return c;
-  if (Array.isArray(c)) {
-    const joined = c
-      .map((x) => {
-        if (typeof x === 'string') return x;
-        if (x && typeof x === 'object' && 'text' in x) return String((x as { text?: unknown }).text ?? '');
-        return '';
-      })
-      .join('');
-    return joined.trim() ? joined : null;
-  }
-  return null;
-}
-
-function choiceAssistantText(choice: Record<string, unknown> | undefined): string | null {
-  if (!choice) return null;
-  const msg = choice.message as Record<string, unknown> | undefined;
-  const fromMsg = messageContentToString(msg);
-  if (fromMsg) return fromMsg;
-  for (const key of ['content', 'text', 'output_text'] as const) {
-    const v = choice[key];
-    if (typeof v === 'string' && v.trim()) return v;
-  }
-  return null;
-}
-
-async function callMiniMaxModel(fragments: ContextFragments, endpoint: string): Promise<string> {
   const userContent = [
-    '以下为完整上下文分片，请严格输出 JSON（无 Markdown、无代码围栏）：',
+    '以下为完整上下文分片，请严格输出 JSON（无 Markdown、无代码围栏）。',
+    '若你能看到 #mmxCliGate：联网发现应已在主流程由 mmx-cli 完成；本条为降级通道，仍须输出带 discoveryNote 的 play（无搜索时可写「降级：无 mmx」）。',
     '# userCorpus\n' + fragments.userCorpus,
     '# environment\n' + fragments.environment,
     '# listeningNow\n' + fragments.listeningNow,
+    '# songCandidates\n' + fragments.songCandidates,
     '# memory\n' + fragments.memory,
     '# userInput\n' + fragments.userInput,
     '# executionTrace\n' + fragments.executionTrace,
   ].join('\n\n');
 
   const body = {
-    model: config.minimaxModel,
+    model: config.minimaxModel || 'MiniMax-M2.7',
     messages: [
       { role: 'system' as const, name: 'Aura DJ', content: fragments.systemPrompt },
       { role: 'user' as const, name: 'User', content: userContent },
@@ -159,8 +328,8 @@ async function callMiniMaxModel(fragments: ContextFragments, endpoint: string): 
     Authorization: `Bearer ${config.minimaxApiKey.trim()}`,
   };
 
-  const ac = AbortSignal.timeout(config.minimaxFetchTimeoutMs);
-  log.debug('brain request', { endpoint, model: body.model, keyPrefix: config.minimaxApiKey.slice(0, 8) });
+  const ac = AbortSignal.timeout(config.minimaxFetchTimeoutMs || 60000);
+  log.debug('brain fallback to MiniMax HTTP', { endpoint, model: body.model });
 
   const res = await fetch(endpoint, {
     method: 'POST',
@@ -174,25 +343,18 @@ async function callMiniMaxModel(fragments: ContextFragments, endpoint: string): 
     throw new Error(`MiniMax HTTP ${res.status}: ${textBody.slice(0, 500)}`);
   }
 
-  let data: MiniMaxChatCompletionJson;
-  try {
-    data = JSON.parse(textBody) as MiniMaxChatCompletionJson;
-  } catch {
-    throw new Error('MiniMax response JSON parse failed');
+  const data = JSON.parse(textBody) as { choices?: Array<{ message?: { content?: string } }>; base_resp?: { status_code?: number; status_msg?: string } };
+  
+  if (data.base_resp?.status_code && data.base_resp.status_code !== 0) {
+    throw new Error(`MiniMax base_resp ${data.base_resp.status_code}: ${data.base_resp.status_msg ?? ''}`);
   }
 
-  const code = data.base_resp?.status_code;
-  if (code !== undefined && code !== 0) {
-    throw new Error(`MiniMax base_resp ${code}: ${data.base_resp?.status_msg ?? ''}`);
-  }
-
-  const choice = data.choices?.[0] as Record<string, unknown> | undefined;
-  const content = choiceAssistantText(choice);
+  const content = data.choices?.[0]?.message?.content;
   if (!content?.trim()) throw new Error('MiniMax empty content');
   return content;
 }
 
-/** Brain Adapter：Claude Code 架构的大脑适配器接口，内部调用 MiniMax */
+/** Brain Adapter：优先本地 Claude，失败则 MiniMax HTTP，再失败则 Mock */
 export async function generateDjScript(fragments: ContextFragments): Promise<{
   script: DjScript;
   normalized: MoodTag;
@@ -200,8 +362,8 @@ export async function generateDjScript(fragments: ContextFragments): Promise<{
   modelRaw?: string;
   usedFallback: boolean;
 }> {
-  const endpoint = resolveMinimaxEndpoint();
-  if (config.minimaxMock || !config.minimaxApiKey.trim() || !endpoint) {
+  // 如果显式启用 Mock 模式，直接返回
+  if (config.brainMock) {
     const script = mockScript(fragments);
     const { moodTag, coerced } = normalizeMoodTag(script.moodTag);
     return { script: { ...script, moodTag }, normalized: moodTag, coercedTag: coerced, usedFallback: false };
@@ -209,9 +371,40 @@ export async function generateDjScript(fragments: ContextFragments): Promise<{
 
   let raw: string | undefined;
   let lastErr: unknown;
-  for (let i = 0; i < 3; i++) {
+  let usedLocalClaude = false;
+
+  // 尝试 1：本地 Claude CLI（至多 3 次短重试）；BRAIN_FORCE_HTTP=1 时跳过
+  if (!config.brainForceHttp) {
+    for (let i = 0; i < 3; i++) {
+      try {
+        raw = await callLocalClaude(fragments);
+        usedLocalClaude = true;
+        log.info('brain local Claude success', { attempt: i });
+        break;
+      } catch (e) {
+        lastErr = e;
+        log.warn('brain local Claude attempt failed', { attempt: i, err: e });
+        if (i < 2) await sleep(800);
+      }
+    }
+  } else {
+    log.info('brain BRAIN_FORCE_HTTP=1 skipping local Claude');
+  }
+
+  // 尝试 2：MiniMax HTTP（如果本地 Claude 失败）
+  if (!raw && config.minimaxApiKey.trim()) {
     try {
-      raw = await callMiniMaxModel(fragments, endpoint);
+      raw = await callMiniMaxHttp(fragments);
+      log.info('brain MiniMax HTTP fallback success');
+    } catch (e) {
+      lastErr = e;
+      log.warn('brain MiniMax HTTP fallback failed', { err: e });
+    }
+  }
+
+  // 尝试解析 JSON
+  if (raw) {
+    try {
       const parsed = parseDjJson(raw);
       let { moodTag, coerced } = normalizeMoodTag(parsed.moodTag);
       if (coerced) log.warn('moodTag coerced to neutral');
@@ -222,14 +415,20 @@ export async function generateDjScript(fragments: ContextFragments): Promise<{
         script = { ...script, say: '' };
       }
 
-      return { script, normalized: moodTag, coercedTag: coerced, modelRaw: raw, usedFallback: false };
+      return { 
+        script, 
+        normalized: moodTag, 
+        coercedTag: coerced, 
+        modelRaw: raw, 
+        usedFallback: !usedLocalClaude 
+      };
     } catch (e) {
       lastErr = e;
-      log.warn('brain attempt failed', { attempt: i, err: e });
-      await sleep(120 * (i + 1));
+      log.warn('brain JSON parse failed', { err: e });
     }
   }
 
+  // 最终降级：Mock
   log.warn('brain exhausted, using mockScript fallback', { err: lastErr });
   const script = mockScript(fragments);
   const { moodTag, coerced } = normalizeMoodTag(script.moodTag);

@@ -19,6 +19,23 @@ const sceneEl = document.querySelector('#scene') as HTMLElement;
 const audioEl = document.querySelector('#player') as HTMLAudioElement;
 const chatInput = document.querySelector('#chat-input') as HTMLInputElement;
 const chatSendBtn = document.querySelector('#chat-send') as HTMLButtonElement;
+const djSpeakingEl = document.querySelector('#dj-speaking') as HTMLElement;
+
+/** `/api/chat` 返回的 DJ 脚本片段（仅需客户端播报 `say`）。 */
+interface ChatDjScript {
+  schemaVersion?: number;
+  say?: string;
+  moodTag?: string;
+  play?: unknown[];
+  segue?: string;
+}
+
+/** 播报期间忽略 WS `now_playing`，避免音乐先于口播 hydrate。 */
+let suppressWsNowPlaying = 0;
+
+function setDjSpeakingVisible(on: boolean) {
+  djSpeakingEl.hidden = !on;
+}
 
 /** 极短静音 WAV（data URL），用于在用户点击的同一同步栈里触发一次合法 play，降低后续被策略拦截的概率。 */
 const SILENT_WAV =
@@ -42,6 +59,20 @@ let lastReportedAudioError: number | null = null;
 /** 静音片手势只需做一次；再次点「唤醒」若重写 src 会破坏当前在播的 MP3。 */
 let didSilentGesturePrime = false;
 
+/** 隐藏的预加载音频元素（仅调用 .load()，不调用 .play()）。 */
+const preloadEl = document.createElement('audio');
+preloadEl.id = 'preload-audio';
+preloadEl.style.display = 'none';
+document.body.appendChild(preloadEl);
+
+/** 当前预加载目标：歌曲项 + 绝对 URL；undefined 表示无有效目标。 */
+let preloadInfo: { item: unknown; absUrl: string } | undefined;
+
+/**
+ * WS `queue` 的 items：有在播条目时服务端 `peek` 会把当前项放在首位，应从 1 起找下一首音乐；idle 时整段即为待播队列，从 0 起找。
+ */
+let queueMusicScanStartIndex = 0;
+
 function normalizeUrl(u?: string) {
   if (!u) return '';
   try {
@@ -50,6 +81,35 @@ function normalizeUrl(u?: string) {
   } catch {
     return '';
   }
+}
+
+/** 从队列中找出第一个音乐项（kind='music'）及其可用 URL。 */
+function findNextMusicItem(
+  items: unknown[],
+  startIndex = 0,
+): { item: unknown; absUrl: string } | undefined {
+  for (let i = Math.max(0, startIndex); i < items.length; i++) {
+    const raw = items[i];
+    const it = raw as { kind?: string; proxiedUrl?: string; url?: string };
+    if (it.kind === 'music') {
+      const absUrl = normalizeUrl(it.proxiedUrl ?? it.url);
+      if (absUrl) return { item: raw, absUrl };
+    }
+  }
+  return undefined;
+}
+
+/** 对给定 URL 发起预加载（仅 .load()，不 .play()）。 */
+function preloadTrack(absUrl: string | undefined) {
+  if (!absUrl) {
+    preloadInfo = undefined;
+    preloadEl.removeAttribute('src');
+    preloadEl.load();
+    return;
+  }
+  preloadInfo = { item: undefined, absUrl };
+  preloadEl.src = absUrl;
+  preloadEl.load();
 }
 
 function mediaUrlIsSameOriginForAnalyser(absUrl: string): boolean {
@@ -101,6 +161,8 @@ function resetAudioElement() {
 }
 
 async function hydrateFromNow(np: NowPlaying) {
+  queueMusicScanStartIndex = np.type === 'idle' ? 0 : 1;
+
   const playRaw = np.proxiedUrl ?? np.url;
   const key = `${np.traceId}:${np.title}:${normalizeUrl(playRaw)}`;
   if (!playRaw) {
@@ -153,6 +215,11 @@ async function hydrateFromNow(np: NowPlaying) {
     setForcePlayVisible(true);
     /** 便于你在控制台看到真实原因 */
     console.warn('[aura] audio.play() rejected', e);
+  }
+
+  // Hydration 完成后立即更新预加载目标（下次 now_playing + queue 会再次更新，以 queue 为准）
+  if (preloadInfo && preloadInfo.absUrl !== absUrl) {
+    preloadInfo = undefined;
   }
 }
 
@@ -214,15 +281,67 @@ function runSilentGesturePrimeOnce() {
   }
 }
 
-async function postDjChat(text: string, replaceQueue: boolean): Promise<{ traceId: string }> {
+async function postDjChat(
+  text: string,
+  replaceQueue: boolean,
+): Promise<{ traceId: string; djScript?: ChatDjScript }> {
   const res = await fetch('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-Timezone': Intl.DateTimeFormat().resolvedOptions().timeZone },
     body: JSON.stringify({ text, replaceQueue }),
   });
-  const body = (await res.json()) as { error?: string; traceId?: string };
+  const body = (await res.json()) as { error?: string; traceId?: string; djScript?: ChatDjScript };
   if (!res.ok) throw new Error(body.error ?? String(res.status));
-  return { traceId: body.traceId as string };
+  return { traceId: body.traceId as string, djScript: body.djScript };
+}
+
+function pickZhSpeechVoice(): SpeechSynthesisVoice | null {
+  const synth = window.speechSynthesis;
+  if (!synth) return null;
+  const voices = synth.getVoices();
+  const cn = voices.find((v) => (v.lang ?? '').toLowerCase().startsWith('zh-cn'));
+  if (cn) return cn;
+  const tw = voices.find((v) => (v.lang ?? '').toLowerCase().startsWith('zh-tw'));
+  if (tw) return tw;
+  return voices.find((v) => /^zh/i.test(v.lang ?? '')) ?? null;
+}
+
+function ensureSpeechVoicesLoaded(): Promise<void> {
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+    return Promise.resolve();
+  }
+  if (window.speechSynthesis.getVoices().length > 0) return Promise.resolve();
+  return new Promise((resolve) => {
+    const synth = window.speechSynthesis;
+    const done = () => {
+      synth.removeEventListener('voiceschanged', onVc);
+      resolve();
+    };
+    const onVc = () => done();
+    synth.addEventListener('voiceschanged', onVc);
+    window.setTimeout(done, 900);
+  });
+}
+
+/**
+ * 用户手势链内朗读 `say`；失败或未支持时静默跳过（不向控制台抛 speech 错误）。
+ * 解析完成后 resolve，便于再接 `/api/now` 播音乐。
+ */
+async function speakDjScriptSay(_say: string | undefined): Promise<void> {
+  // 已废弃：口播内容现在由服务端 TTS 生成 MP3，通过队列 voice 项目播放
+  // 不再使用浏览器 Web Speech API（会产生重复声音）
+  return;
+}
+
+/** 先朗读 `djScript.say`（若有），再拉当前播放态，避免音乐抢先盖过口播。 */
+async function djSpeechThenPullNow(traceId: string | undefined, djScript: ChatDjScript | undefined) {
+  suppressWsNowPlaying++;
+  try {
+    await speakDjScriptSay(djScript?.say);
+    await pullNowAndPlay(traceId);
+  } finally {
+    suppressWsNowPlaying--;
+  }
 }
 
 /** 当前 <audio> 是否已指向真实媒资（非 data: 手势片）。 */
@@ -259,8 +378,8 @@ bootBtn.addEventListener('click', async () => {
   bootBtn.textContent = '已唤醒 — 悬停此处可显示指令';
   try {
     const body = await postDjChat('初次见面，帮我开始一段轻柔的电台。', false);
-    /** 不依赖 WebSocket 时序：入队后立即拉一次当前态，避免只显示 trace 却无播放。 */
-    await pullNowAndPlay(body.traceId);
+    /** 先客户端播报 `say`，再拉队列头音乐（与无 voice 队列段对齐）。 */
+    await djSpeechThenPullNow(body.traceId, body.djScript);
     window.setTimeout(() => {
       if (audioEl.paused && audioEl.src && !audioEl.ended) {
         setForcePlayVisible(true);
@@ -283,7 +402,7 @@ newSegmentBtn.addEventListener('click', async () => {
     );
     /** 服务端已清空队列；客户端也丢弃「同一 key」短路，确保立刻拉新头。 */
     lastPlayedKey = '';
-    await pullNowAndPlay(body.traceId);
+    await djSpeechThenPullNow(body.traceId, body.djScript);
     metaEl.textContent += '\n换段：队列已重置，正在播放新片段。';
   } catch (e) {
     metaEl.textContent = `换一段失败：${String(e)}`;
@@ -310,7 +429,7 @@ chatSendBtn.addEventListener('click', async () => {
   await resumeAudioContextIfAny();
   try {
     const body = await postDjChat(text, false);
-    await pullNowAndPlay(body.traceId);
+    await djSpeechThenPullNow(body.traceId, body.djScript);
   } catch (e) {
     metaEl.textContent = `发送失败：${String(e)}`;
   }
@@ -339,10 +458,16 @@ const ws = new WebSocket(`${proto}://${location.host}/stream`);
 
 ws.addEventListener('message', async (ev) => {
   if (!userAllowedPlayback) return;
+  if (suppressWsNowPlaying > 0) return;
   try {
-    const msg = JSON.parse(String(ev.data)) as { type?: string; payload?: NowPlaying };
-    if (msg.type === 'now_playing' && msg.payload?.type) {
-      await hydrateFromNow(msg.payload);
+    const msg = JSON.parse(String(ev.data)) as { type?: string; payload?: unknown; items?: unknown[] };
+    const npRaw = msg.payload as NowPlaying | undefined;
+    if (msg.type === 'now_playing' && npRaw?.type) {
+      const np = npRaw;
+      await hydrateFromNow(np);
+    } else if (msg.type === 'queue' && Array.isArray(msg.items)) {
+      const next = findNextMusicItem(msg.items, queueMusicScanStartIndex);
+      preloadTrack(next?.absUrl);
     }
   } catch {
     /** ignore */
@@ -355,6 +480,12 @@ ws.addEventListener('open', () => {
 
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').catch(() => undefined);
+}
+
+/** 预热语音列表（Chrome 等异步加载 voices）。 */
+if ('speechSynthesis' in window) {
+  window.speechSynthesis.getVoices();
+  window.speechSynthesis.addEventListener('voiceschanged', () => window.speechSynthesis.getVoices());
 }
 
 audioEl.addEventListener('error', () => {

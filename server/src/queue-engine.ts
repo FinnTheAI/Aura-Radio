@@ -6,7 +6,6 @@ import { log } from './logger.js';
 import { ncmSongDetail, ncmSongUrl } from './ncma.js';
 import type { DjScript, MoodTag, NowPlaying, QueueItem } from './types.js';
 import type { StreamHub } from './stream-hub.js';
-import { generateTtsAudio } from './tts.js';
 
 interface Active {
   item: QueueItem;
@@ -157,32 +156,19 @@ export class QueueEngine {
   async enqueueFromScript(
     script: DjScript,
     traceId: string,
-    options?: { skipLeadingVoice?: boolean; djAnnounce?: boolean | string }
+    options?: { djAnnounce?: boolean | string },
   ) {
     if (script.play.length === 0) return;
 
-    const skipLeadingVoice = options?.skipLeadingVoice ?? false;
     const [first, ...rest] = script.play;
 
-    // 生成 TTS 口播（若未跳过且有 say 文本）
-    if (!skipLeadingVoice && script.say?.trim()) {
-      try {
-        const sayText = `${script.say} ${script.segue ?? ''}`.trim();
-        const tts = await generateTtsAudio(sayText, { cacheKeySuffix: traceId });
-        this.pending.push({
-          kind: 'voice',
-          title: 'DJ 口播',
-          url: tts.url,
-          durationMs: tts.durationMs,
-          moodTag: script.moodTag,
-          traceId,
-          sayText: script.say,
-        });
-        log.info('TTS voice enqueued', { traceId, durMs: tts.durationMs });
-      } catch (e) {
-        log.warn('TTS voice generation failed, continuing without voice', { err: String(e) });
-      }
-    }
+    /** 口播改为前端大字文案（djText），不再插入 TTS voice 队列项 */
+    const ann =
+      typeof options?.djAnnounce === 'string' && options.djAnnounce.trim()
+        ? options.djAnnounce.trim()
+        : '';
+    const saySeg = [script.say?.trim(), script.segue?.trim()].filter(Boolean).join('\n\n');
+    const djTextMerged = [ann, saySeg].filter(Boolean).join('\n\n') || undefined;
 
     const { url, durationMs } = await ncmSongUrl(first.ncmSongId);
 
@@ -195,6 +181,8 @@ export class QueueEngine {
       ncmSongId: first.ncmSongId,
       moodTag: script.moodTag,
       traceId,
+      djText: djTextMerged,
+      sayText: script.say?.trim() || undefined,
     });
     this.emit();
     if (!this.active) this.popNext();

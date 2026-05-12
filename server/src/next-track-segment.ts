@@ -49,7 +49,7 @@ export function scheduleNextTrackDiscovery(queue: QueueEngine, prev: PlaybackDra
           JSON.stringify({ script, normalized, source: 'offline-next-track' }),
           traceId,
         );
-        await queue.enqueueFromScript(script, traceId, { skipLeadingVoice: true, djAnnounce });
+        await queue.enqueueFromScript(script, traceId, { djAnnounce });
         log.info('offline next-track enqueued', { traceId });
       } catch (e) {
         log.warn('offline next-track failed', { err: String(e) });
@@ -113,8 +113,8 @@ export function scheduleNextTrackDiscovery(queue: QueueEngine, prev: PlaybackDra
         traceId,
       );
 
-      /** 一曲播毕自动接歌：不再插入一整段前置口播（易与上一段立意重复，且拉长空档）。 */
-      await queue.enqueueFromScript(script, traceId, { skipLeadingVoice: true });
+      /** 一曲播毕自动接歌：首条音乐不附带长篇前置文案（与离线 djAnnounce 不同）。 */
+      await queue.enqueueFromScript(script, traceId);
       log.info('next-track discovery enqueued', { traceId, usedFallback });
     } catch (e) {
       log.warn('next-track discovery failed', { err: String(e) });

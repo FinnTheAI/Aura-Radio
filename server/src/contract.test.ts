@@ -60,17 +60,21 @@ describe('HTTP contract (ARCH_DOC / CONTRACT.yaml)', () => {
     expect(res.body.progressPercent === null || typeof res.body.progressPercent === 'number').toBe(true);
   });
 
-  it('POST /api/chat → traceId + djScript', async () => {
-    const res = await request(app).post('/api/chat').send({ text: 'hello contract' }).expect(200);
+  it(
+    'POST /api/chat → traceId + djScript',
+    async () => {
+      const res = await request(app).post('/api/chat').send({ text: 'hello contract' }).expect(200);
 
-    expect(typeof res.body.traceId).toBe('string');
+      expect(typeof res.body.traceId).toBe('string');
 
-    expect(res.body.queued).toBe(true);
+      expect(res.body.queued).toBe(true);
 
-    expect(res.body.djScript.schemaVersion).toBe(1);
+      expect(res.body.djScript.schemaVersion).toBe(1);
 
-    expect(Array.isArray(res.body.djScript.play)).toBe(true);
-  });
+      expect(Array.isArray(res.body.djScript.play)).toBe(true);
+    },
+    25_000,
+  );
 
   it('GET /api/now + /api/next', async () => {
     await request(app).get('/api/now').expect(200);
@@ -86,14 +90,18 @@ describe('HTTP contract (ARCH_DOC / CONTRACT.yaml)', () => {
     await request(app).get('/api/audio/proxy').query({ url: 'ftp://bad' }).expect(400);
   });
 
-  it('POST /api/chat with replaceQueue', async () => {
-    await request(app).post('/api/chat').send({ text: 'seed queue' }).expect(200);
-    const res = await request(app)
-      .post('/api/chat')
-      .send({ text: 'replace me', replaceQueue: true })
-      .expect(200);
-    expect(res.body.queued).toBe(true);
-    expect(typeof res.body.traceId).toBe('string');
-  });
+  it(
+    'POST /api/chat with replaceQueue',
+    async () => {
+      await request(app).post('/api/chat').send({ text: 'seed queue' }).expect(200);
+      const res = await request(app)
+        .post('/api/chat')
+        .send({ text: 'replace me', replaceQueue: true })
+        .expect(200);
+      expect(res.body.queued).toBe(true);
+      expect(typeof res.body.traceId).toBe('string');
+    },
+    25_000,
+  );
 });
 

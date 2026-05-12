@@ -65,6 +65,16 @@ export const config = {
   /** Upstream NeteaseCloudMusicApi request timeout (ms). */
   ncmFetchTimeoutMs: Math.max(1000, Number(process.env.NCM_FETCH_TIMEOUT_MS ?? 20_000) || 20_000),
   /**
+   * `/song/url` 无可用地址或请求失败时是否调用 yt-dlp。
+   * 设为 `0`：不再拉 yt-dlp / 占位音频，抛出 `NcmPlayableUnavailableError`，由队列尝试 `play[]` 下一首。
+   */
+  ncmYtdlpFallback: parseBool(process.env.NCM_YTDLP_FALLBACK, true),
+  /**
+   * `discoveryNote` → cloudsearch 结果是否逐个探测 `/song/url`（首个非空再入选）。
+   * `0`：恢复随机抽一首（旧行为，少请求上游）。
+   */
+  ncmDiscoveryProbePlayable: parseBool(process.env.NCM_DISCOVERY_PROBE_PLAYABLE, true),
+  /**
    * Optional Cookie header sent to `NCM_API_BASE_URL` only (e.g. local proxy needs login state).
    * Never commit real cookie values.
    */
@@ -113,4 +123,12 @@ export const config = {
 
   // 下一首发现冷却时间
   nextTrackDiscoveryCooldownMs: Number(process.env.NEXT_TRACK_DISCOVERY_COOLDOWN_MS ?? 30_000),
+
+  /**
+   * 舞台建筑底图目录（jpg/png/webp）。默认仓库 `Ref/Background`。
+   * 可用 `BACKGROUND_REF_DIR` 覆盖为绝对路径或相对 cwd。
+   */
+  backgroundRefDir: process.env.BACKGROUND_REF_DIR
+    ? path.resolve(process.cwd(), process.env.BACKGROUND_REF_DIR)
+    : path.join(repoRoot, 'Ref', 'Background'),
 };

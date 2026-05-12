@@ -18,7 +18,10 @@ import {
 } from './song-candidates.js';
 import type { PlaybackDrainedMusicMeta, QueueEngine } from './queue-engine.js';
 import { getPlaybackMode } from './playback-mode.js';
-import { buildOfflineFolderDjScript } from './offline-playback.js';
+import {
+  buildOfflineDjScriptForBasename,
+  nextOfflineBasenameAfter,
+} from './offline-playback.js';
 import { normalizeMoodTag } from './taste-mood.js';
 
 let inFlight = false;
@@ -40,16 +43,31 @@ export function scheduleNextTrackDiscovery(queue: QueueEngine, prev: PlaybackDra
     void (async () => {
       const traceId = randomUUID();
       try {
-        const { script, djAnnounce } = buildOfflineFolderDjScript(
-          '上一曲已播毕，续播本地目录中的下一首。',
+        let curBasename: string | undefined;
+        if (prev.ncmSongId?.startsWith('local:')) {
+          try {
+            curBasename = decodeURIComponent(prev.ncmSongId.slice('local:'.length));
+          } catch {
+            curBasename = undefined;
+          }
+        }
+        const nextBase = nextOfflineBasenameAfter(curBasename);
+        if (!nextBase) {
+          log.warn('offline next-track: no mp3 in downloads');
+          return;
+        }
+        const { script, djAnnounce } = buildOfflineDjScriptForBasename(
+          nextBase,
+          '上一曲已播毕，续播本地列表中的下一首。',
         );
         persistUserTurn('(系统自动：离线续播)', traceId);
         const { moodTag: normalized } = normalizeMoodTag(script.moodTag);
+        const scriptNorm = { ...script, moodTag: normalized };
         persistAssistantJson(
-          JSON.stringify({ script, normalized, source: 'offline-next-track' }),
+          JSON.stringify({ script: scriptNorm, normalized, source: 'offline-next-track' }),
           traceId,
         );
-        await queue.enqueueFromScript(script, traceId, { djAnnounce });
+        await queue.enqueueFromScript(scriptNorm, traceId, { djAnnounce });
         log.info('offline next-track enqueued', { traceId });
       } catch (e) {
         log.warn('offline next-track failed', { err: String(e) });
@@ -106,7 +124,11 @@ export function scheduleNextTrackDiscovery(queue: QueueEngine, prev: PlaybackDra
       const { script: rawScript, normalized, usedFallback } = await generateDjScript(fragments, {
         mmxInvocationId: traceId,
       });
-      const script = { ...rawScript, play: await resolvePlayFromDiscovery(rawScript.play, candidates) };
+      const resolvedBundle = await resolvePlayFromDiscovery(rawScript.play, candidates);
+      const script = { ...rawScript, play: resolvedBundle.play };
+      if (resolvedBundle.playbackHints.length) {
+        log.warn('[next-track] playback_hints', { traceId, hints: resolvedBundle.playbackHints });
+      }
 
       persistAssistantJson(
         JSON.stringify({ script, normalized, usedFallback, source: 'next-track-discovery' }),

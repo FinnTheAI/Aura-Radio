@@ -25,6 +25,23 @@ export function pickRandomLocalDownload(): string | null {
   return xs[Math.floor(Math.random() * xs.length)]!;
 }
 
+/** 稳定顺序，便于「离线下一首」循环遍历 */
+export function listDownloadMp3Sorted(): string[] {
+  return [...listDownloadMp3Basenames()].sort((a, b) =>
+    a.localeCompare(b, 'zh-CN', { numeric: true, sensitivity: 'base' }),
+  );
+}
+
+/** `currentBasename` 为纯文件名（含 .mp3）；若无当前曲则从列表首首开始 */
+export function nextOfflineBasenameAfter(currentBasename: string | undefined): string | null {
+  const sorted = listDownloadMp3Sorted();
+  if (!sorted.length) return null;
+  if (!currentBasename) return sorted[0]!;
+  const i = sorted.indexOf(currentBasename);
+  if (i < 0) return sorted[0]!;
+  return sorted[(i + 1) % sorted.length]!;
+}
+
 function durationGuessFromFileSize(size: number): number {
   /** 粗估比特率 128kbps 量级，避免 json 过大；夹在 3–10 分钟 */
   const ms = Math.floor((size / (128_000 / 8)) * 1000);
@@ -69,6 +86,31 @@ export interface OfflineFolderResult {
   djAnnounce: string;
 }
 
+export function buildOfflineDjScriptForBasename(basename: string, userNote: string): OfflineFolderResult {
+  const allowed = listDownloadMp3Basenames();
+  if (!basename || !allowed.includes(basename)) {
+    throw new Error(`离线文件不可用：${basename || '(空)'}`);
+  }
+  const session = deriveSessionMood();
+  const label = path.basename(basename, path.extname(basename));
+  const note = userNote.trim() || '继续收听本地曲库。';
+  const djAnnounce = `【离线模式 · 来自收藏】\n${note}\n\n即将播放：${label}`;
+  const script: DjScript = {
+    schemaVersion: 1,
+    say: '',
+    segue: '',
+    play: [
+      {
+        ncmSongId: `local:${encodeURIComponent(basename)}`,
+        reason: '离线目录曲目',
+        discoveryNote: `${LOCAL_FS_PREFIX}${encodeURIComponent(basename)}`,
+      },
+    ],
+    moodTag: session.moodTag,
+  };
+  return { script, djAnnounce };
+}
+
 export function buildOfflineFolderDjScript(userText: string): OfflineFolderResult {
   const file = pickRandomLocalDownload();
   if (!file) {
@@ -76,24 +118,7 @@ export function buildOfflineFolderDjScript(userText: string): OfflineFolderResul
       '离线模式：data/downloads 下没有可用的 .mp3。请先在线收听并「收藏到离线」，或将 mp3 放入该目录。',
     );
   }
-  const session = deriveSessionMood();
-  const label = path.basename(file, path.extname(file));
-  const note = userText.trim() || '继续收听本地曲库。';
-  const djAnnounce = `【离线模式 · 文字播报】\n${note}\n\n即将播放：${label}`;
-  const script: DjScript = {
-    schemaVersion: 1,
-    say: '',
-    segue: '',
-    play: [
-      {
-        ncmSongId: `local:${encodeURIComponent(file)}`,
-        reason: '离线目录随机曲目',
-        discoveryNote: `${LOCAL_FS_PREFIX}${encodeURIComponent(file)}`,
-      },
-    ],
-    moodTag: session.moodTag,
-  };
-  return { script, djAnnounce };
+  return buildOfflineDjScriptForBasename(file, userText);
 }
 
 export function registerLocalAudioFileRoute(app: Express): void {

@@ -1,0 +1,21 @@
+{
+  "_comment": "视觉物理常数；修改时请同步 client/src/style.css 中 :root 变量。WebGL 粒子配色与尺寸以 client/src/visual.ts 内 AURA_PARTICLES 及着色器为准，见 docs/ARCH_DOC.md §2.1",
+  "canvas": {
+    "ratio": "9:16",
+    "theme": "Atmospheric_Spatial"
+  },
+  "palette": {
+    "particle_gold": "rgba(212, 175, 55, 0.8)",
+    "ui_accent": "rgba(255, 255, 255, 0.9)",
+    "status_bg": "rgba(20, 20, 20, 0.4)"
+  },
+  "effects": {
+    "idle_state": { "blur": "0px", "ui_opacity": 0 },
+    "hover_state": {
+      "blur": "20px",
+      "ui_opacity": 1,
+      "transition": "cubic-bezier(0.4, 0, 0.2, 1) 0.5s"
+    },
+    "particle_bloom": { "strength": 1.2, "radius": 0.5 }
+  }
+}

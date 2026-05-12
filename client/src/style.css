@@ -1,25 +1,92 @@
+/* =============================================================================
+   视觉令牌 — 与 docs/DESIGN_TOKENS.json 同步修改
+   ============================================================================= */
+:root {
+  --particle-gold: rgba(212, 175, 55, 0.8);
+  --ui-accent: rgba(255, 255, 255, 0.9);
+  --status-bg: rgba(20, 20, 20, 0.4);
+  --canvas-clear: #06080d;
+  --hover-blur: 20px;
+  --hover-transition: cubic-bezier(0.4, 0, 0.2, 1) 0.5s;
+  --stage-ratio-w: 9;
+  --stage-ratio-h: 16;
+}
+
 * {
   box-sizing: border-box;
 }
+
 html,
 body {
   margin: 0;
   height: 100%;
   overflow: hidden;
-  background: #0c0f14;
-  color: rgba(248, 250, 255, 0.78);
+  background: var(--canvas-clear);
+  color: var(--ui-accent);
   font-family:
     ui-sans-serif,
     system-ui,
     -apple-system,
-    Segoe UI,
+    'Segoe UI',
     sans-serif;
 }
-#scene {
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---- 底座 + 虚化层（COMPONENT_GRAMMAR：虚化仅在 bg 与 canvas 之间） ---- */
+#bg-layer {
   position: fixed;
   inset: 0;
   z-index: 0;
+  background-color: var(--canvas-clear);
+  background-size: cover;
+  background-position: center center;
+  background-repeat: no-repeat;
 }
+
+#stage-blur {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  opacity: 0;
+  background: var(--status-bg);
+  backdrop-filter: blur(0);
+  -webkit-backdrop-filter: blur(0);
+  transition:
+    opacity var(--hover-transition),
+    backdrop-filter var(--hover-transition),
+    -webkit-backdrop-filter var(--hover-transition);
+}
+
+.aura-stage:hover #stage-blur {
+  opacity: 1;
+  backdrop-filter: blur(var(--hover-blur));
+  -webkit-backdrop-filter: blur(var(--hover-blur));
+}
+
+#scene {
+  position: fixed;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+
+#scene canvas {
+  display: block;
+  background: transparent !important;
+}
+
 #player {
   position: absolute;
   width: 0;
@@ -27,80 +94,201 @@ body {
   opacity: 0;
   pointer-events: none;
 }
-#hud {
+
+/* ---- HUD：隐身；观测介入后显现（UI_MOODBOARD） ---- */
+#hud.hud-root {
   position: fixed;
-  inset: auto 0 0 0;
-  z-index: 2;
-  padding: clamp(14px, 3vw, 28px);
-  display: grid;
-  gap: 12px;
-  justify-items: start;
-  background: linear-gradient(to top, rgba(8, 10, 16, 0.85), transparent);
-  opacity: 0;
-  transition: opacity 200ms ease;
-}
-body:hover #hud,
-body:focus-within #hud {
-  opacity: 1;
-}
-#boot,
-.hud-btn {
-  border: none;
-  background: transparent;
-  color: inherit;
-  text-decoration: underline;
-  text-underline-offset: 4px;
-  cursor: pointer;
-  font-size: 14px;
-  padding: 0;
-}
-.hud-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-  text-decoration: none;
-}
-#meta {
-  max-width: 56ch;
-  line-height: 1.55;
-  font-size: 13px;
-}
-#chat-row {
+  inset: 0;
+  z-index: 3;
   display: flex;
-  gap: 8px;
-  align-items: center;
+  flex-direction: column;
+  justify-content: flex-end;
+  padding: clamp(16px, 4vw, 32px);
+  padding-bottom: max(clamp(16px, 4vw, 32px), env(safe-area-inset-bottom));
+  gap: 14px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity var(--hover-transition);
 }
-#chat-input {
-  flex: 1;
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  color: inherit;
-  font-size: 13px;
-  padding: 6px 10px;
-  border-radius: 4px;
-  outline: none;
+
+.aura-stage:hover #hud.hud-root,
+.aura-stage:focus-within #hud.hud-root {
+  opacity: 1;
+  pointer-events: auto;
 }
-#chat-input:focus {
-  border-color: rgba(255, 255, 255, 0.4);
-}
-.pipeline-status {
-  max-width: 56ch;
-  font-size: 12px;
-  opacity: 0.7;
-}
-.mode-bar {
+
+.hud-hover-strip {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.icon-matrix {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--ui-accent);
+  cursor: pointer;
+  opacity: 0.82;
+  transition: opacity 0.25s ease, transform 0.2s ease;
+}
+
+.icon-btn:hover:not(:disabled) {
+  opacity: 1;
+  transform: scale(1.04);
+}
+
+.icon-btn:disabled {
+  opacity: 0.28;
+  cursor: not-allowed;
+}
+
+.hairline-icon {
+  width: 22px;
+  height: 22px;
+}
+
+.mode-cluster {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.hairline-label {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 0.72;
+}
+
+.hairline-link {
+  border: none;
+  background: transparent;
+  padding: 0;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ui-accent);
+  opacity: 0.72;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 4px;
+  text-decoration-thickness: 1px;
+}
+
+.hairline-link:hover:not(:disabled) {
+  opacity: 1;
+}
+
+.force-play {
+  align-self: flex-start;
+}
+
+/* ---- Chat 面板 ---- */
+.chat-panel {
+  max-width: min(520px, 100%);
+}
+
+.chat-panel[hidden] {
+  display: none !important;
+}
+
+.chat-row {
+  display: flex;
+  gap: 10px;
   align-items: center;
 }
-.mode-status {
-  font-size: 12px;
-  opacity: 0.7;
+
+#chat-input {
+  flex: 1;
+  min-width: 0;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  color: var(--ui-accent);
+  font-size: 13px;
+  padding: 10px 12px;
+  border-radius: 2px;
+  outline: none;
 }
+
+#chat-input:focus {
+  border-color: rgba(212, 175, 55, 0.55);
+}
+
+.chat-send.chat-send-active {
+  opacity: 1;
+}
+
+.chat-send:not(.chat-send-active) {
+  opacity: 0.32;
+}
+
+.pipeline-status {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 0.72;
+}
+
 .dj-announce {
-  max-width: 56ch;
-  font-size: 15px;
-  line-height: 1.6;
+  max-width: min(56ch, 100%);
+  font-size: 14px;
+  line-height: 1.65;
   white-space: pre-wrap;
-  color: rgba(248, 250, 255, 0.9);
+  color: var(--ui-accent);
+  padding: 10px 14px;
+  border-radius: 2px;
+  background: var(--status-bg);
+}
+
+/* ---- 状态铭牌 ---- */
+.status-nameplate {
+  margin-top: auto;
+}
+
+.meta-block {
+  max-width: min(56ch, 100%);
+  line-height: 1.55;
+  font-size: 12px;
+  opacity: 0.78;
+  padding: 12px 14px;
+  border-radius: 2px;
+  background: var(--status-bg);
+}
+
+/* 触控设备无 hover：保证可操作（隐身原则的务实降级） */
+@media (hover: none) {
+  #hud.hud-root {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  #stage-blur {
+    opacity: 0.55;
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+  }
+}
+
+@media (min-aspect-ratio: 9/16) {
+  /* 宽屏：仍可保持竖构图意象，仅限制阅读宽度 */
+  .meta-block,
+  .dj-announce {
+    max-width: min(52ch, 42vw);
+  }
 }

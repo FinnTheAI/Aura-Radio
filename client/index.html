@@ -2,30 +2,86 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#0c0f14" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#06080d" />
     <title>Aura Radio</title>
   </head>
-  <body>
+  <body class="aura-stage">
+    <!-- 底座：建筑负空间（随机 Ref/Background） -->
+    <div id="bg-layer" aria-hidden="true"></div>
+    <!-- 悬停观测介入：仅虚化底座层（画布在其之上保持锐利） -->
+    <div id="stage-blur" aria-hidden="true"></div>
     <div id="scene"></div>
     <!-- 不设 crossOrigin：外链 MP3 无 CORS 时，anonymous 会导致 MEDIA_ERR_SRC_NOT_SUPPORTED（code=4） -->
     <audio id="player" playsinline preload="none"></audio>
-    <div id="hud">
-      <button id="boot" type="button">触碰以唤醒播放</button>
-      <div id="mode-bar" class="mode-bar">
-        <span id="mode-status" class="mode-status">播放模式：…</span>
-        <button id="mode-toggle" type="button" class="hud-btn">切换在线 / 离线…</button>
-      </div>
-      <button id="new-segment" type="button" class="hud-btn">换一段</button>
-      <button id="favorite-btn" type="button" class="hud-btn" hidden>收藏到离线</button>
-      <div id="chat-row">
-        <input id="chat-input" type="text" placeholder="说点什么..." />
-        <button id="chat-send" type="button" class="hud-btn">发送</button>
-      </div>
+
+    <div id="hud" class="hud-root">
+      <header class="hud-hover-strip">
+        <nav class="icon-matrix" aria-label="播放控制">
+          <button type="button" id="boot" class="icon-btn" title="唤醒 / 暂停">
+            <svg class="hairline-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <polygon points="9,7 9,17 17,12" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" />
+            </svg>
+            <span class="sr-only boot-label">唤醒播放</span>
+          </button>
+          <button type="button" id="next-track" class="icon-btn" title="下一首">
+            <svg class="hairline-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <polygon points="7,7 7,17 13,12" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" />
+              <polygon points="13,7 13,17 19,12" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" />
+            </svg>
+            <span class="sr-only">下一首</span>
+          </button>
+          <button type="button" id="favorite-btn" class="icon-btn" hidden title="收藏到离线">
+            <svg class="hairline-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                d="M12 18.5l-6.5 3.6 1.4-7.4L2 9.4l7.5-.7L12 2l2.5 6.7 7.5.7-5.4 5.3 1.4 7.4z"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.2"
+                stroke-linejoin="round"
+              />
+            </svg>
+            <span class="sr-only">收藏</span>
+          </button>
+          <button type="button" id="chat-toggle" class="icon-btn" title="对话" aria-expanded="false" aria-controls="chat-panel">
+            <svg class="hairline-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                d="M5 6h14v10H9l-4 3v-13z"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.2"
+                stroke-linejoin="round"
+              />
+            </svg>
+            <span class="sr-only">对话</span>
+          </button>
+        </nav>
+        <div class="mode-cluster">
+          <span id="mode-status" class="mode-status hairline-label">播放模式：…</span>
+          <button type="button" id="mode-toggle" class="hairline-link">在线 / 离线</button>
+        </div>
+      </header>
+
+      <section id="chat-panel" class="chat-panel" hidden>
+        <div id="chat-row" class="chat-row">
+          <input id="chat-input" type="text" placeholder="说点什么…" autocomplete="off" />
+          <button type="button" id="chat-send" class="icon-btn chat-send" title="发送">
+            <svg class="hairline-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 12l16-7-7 16-2-6-7-3z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" />
+            </svg>
+            <span class="sr-only">发送</span>
+          </button>
+        </div>
+      </section>
+
       <div id="pipeline-status" class="pipeline-status" hidden aria-live="polite"></div>
+
       <div id="dj-announce" class="dj-announce" hidden aria-live="polite"></div>
-      <button id="force-play" type="button" class="hud-btn" hidden>点此出声</button>
-      <div id="meta" aria-live="polite"></div>
+      <button id="force-play" type="button" class="hairline-link force-play" hidden>点此出声</button>
+
+      <footer class="status-nameplate">
+        <div id="meta" class="meta-block" aria-live="polite"></div>
+      </footer>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>

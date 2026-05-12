@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto';
 import { applyProxiedPlaybackUrl } from './audio-proxy.js';
-import { config } from './config.js';
 import { persistPlay } from './context-builder.js';
 import { log } from './logger.js';
 import { ncmSongDetail, ncmSongUrl } from './ncma.js';
@@ -21,6 +20,14 @@ export interface PlaybackDrainedMusicMeta {
   moodTag: MoodTag;
   durationMs: number;
   traceId?: string;
+}
+
+export class PlayableAudioUnavailableError extends Error {
+  readonly code = 'PLAYABLE_AUDIO_UNAVAILABLE' as const;
+  constructor(message?: string) {
+    super(message ?? '暂无可播放音源（请检查 NCM、登录 Cookie，或稍后重试）');
+    this.name = 'PlayableAudioUnavailableError';
+  }
 }
 
 export class QueueEngine {
@@ -45,6 +52,13 @@ export class QueueEngine {
   stop() {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+  }
+
+  /** 清空当前播放与排队项（切换在线/离线模式等）；下一轮曲目由此模式的接口重新入队 */
+  clearAll(): void {
+    this.pending.length = 0;
+    this.active = null;
+    this.emit();
   }
 
   private emit() {
@@ -160,9 +174,6 @@ export class QueueEngine {
   ) {
     if (script.play.length === 0) return;
 
-    const [first, ...rest] = script.play;
-
-    /** 口播改为前端大字文案（djText），不再插入 TTS voice 队列项 */
     const ann =
       typeof options?.djAnnounce === 'string' && options.djAnnounce.trim()
         ? options.djAnnounce.trim()
@@ -170,7 +181,33 @@ export class QueueEngine {
     const saySeg = [script.say?.trim(), script.segue?.trim()].filter(Boolean).join('\n\n');
     const djTextMerged = [ann, saySeg].filter(Boolean).join('\n\n') || undefined;
 
-    const { url, durationMs } = await ncmSongUrl(first.ncmSongId);
+    let chosenIdx = -1;
+    let url = '';
+    let durationMs = 240_000;
+    for (let i = 0; i < script.play.length; i++) {
+      const p = script.play[i]!;
+      try {
+        const r = await ncmSongUrl(p.ncmSongId);
+        if (r.url?.trim()) {
+          chosenIdx = i;
+          url = r.url;
+          durationMs = r.durationMs;
+          break;
+        }
+      } catch (e) {
+        log.warn('[queue] skip unplayable play[] entry', {
+          ncmSongId: p.ncmSongId,
+          err: e instanceof Error ? e.message : String(e),
+        });
+      }
+    }
+
+    if (chosenIdx < 0) {
+      throw new PlayableAudioUnavailableError();
+    }
+
+    const first = script.play[chosenIdx]!;
+    const rest = script.play.slice(chosenIdx + 1);
 
     this.pending.push({
       kind: 'music',
@@ -203,11 +240,13 @@ export class QueueEngine {
       return;
     }
     try {
-      const items: QueueItem[] = await Promise.all(
-        rest.map(async (p) => {
+      const items: QueueItem[] = [];
+      for (const p of rest) {
+        try {
           const meta = await ncmSongDetail(p.ncmSongId);
           const { url: u, durationMs: d } = await ncmSongUrl(p.ncmSongId);
-          return {
+          if (!u?.trim()) continue;
+          items.push({
             kind: 'music' as const,
             title: meta.name,
             artist: meta.artists.join(' / '),
@@ -216,9 +255,14 @@ export class QueueEngine {
             ncmSongId: p.ncmSongId,
             moodTag,
             traceId,
-          };
-        }),
-      );
+          });
+        } catch (e) {
+          log.warn('loadRestAsNeeded skip entry', {
+            ncmSongId: p.ncmSongId,
+            err: e instanceof Error ? e.message : String(e),
+          });
+        }
+      }
       this.pending.push(...items);
       this.emit();
       if (!this.active) this.popNext();
@@ -230,6 +274,27 @@ export class QueueEngine {
 
   /** 用 `song/detail` 覆盖当前正在播放条目的占位标题（若仍是首条）。 */
   private async hydratePlayingTitle(ncmSongId: string, moodTag: MoodTag, traceId: string) {
+    if (ncmSongId.startsWith('local:')) {
+      try {
+        const base = decodeURIComponent(ncmSongId.slice('local:'.length));
+        const label = base.replace(/\.mp3$/i, '');
+        const cur = this.active;
+        if (
+          !cur ||
+          cur.traceId !== traceId ||
+          cur.item.kind !== 'music' ||
+          cur.item.ncmSongId !== ncmSongId
+        ) {
+          return;
+        }
+        cur.item.title = label;
+        cur.item.artist = '本地收藏';
+        this.emit();
+      } catch {
+        /** ignore */
+      }
+      return;
+    }
     try {
       const meta = await ncmSongDetail(ncmSongId);
       const cur = this.active;
@@ -249,11 +314,15 @@ export class QueueEngine {
     }
   }
 
-  /** 丢弃当前与排队项，立即按新脚本重建队列（用于「换一段」）。 */
-  async resetQueueAndEnqueueFromScript(script: DjScript, traceId: string) {
+  /** 丢弃当前与排队项，立即按新脚本重建队列（用于「下一首」等）。 */
+  async resetQueueAndEnqueueFromScript(
+    script: DjScript,
+    traceId: string,
+    options?: { djAnnounce?: boolean | string },
+  ) {
     this.pending.length = 0;
     this.active = null;
-    await this.enqueueFromScript(script, traceId);
+    await this.enqueueFromScript(script, traceId, options);
   }
 }
 

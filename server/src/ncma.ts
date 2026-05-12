@@ -1,4 +1,6 @@
 import { config, mergeNcmCookies } from './config.js';
+import fs from 'node:fs';
+import path from 'node:path';
 import { log } from './logger.js';
 import { getNcmSongUrl as ytdlpGetUrl, mockNcmPlayableFallback, getNcmSongMetaFromYtDlp } from './ytdlp.js';
 
@@ -17,6 +19,18 @@ interface NcmSearchBody {
 
 interface NcmUrlBody {
   data?: Array<{ id: number; url?: string; time?: number }>;
+}
+
+/** `/song/url` 失败且禁用 yt-dlp 时抛出，供队列跳过该候选。 */
+export class NcmPlayableUnavailableError extends Error {
+  readonly code = 'NCM_PLAYABLE_UNAVAILABLE' as const;
+  constructor(
+    readonly ncmSongId: string,
+    detail?: string,
+  ) {
+    super(detail?.trim() ? `暂无可用播放地址（${ncmSongId}）：${detail.trim()}` : `暂无可用播放地址：${ncmSongId}`);
+    this.name = 'NcmPlayableUnavailableError';
+  }
 }
 
 interface NcmLyricBody {
@@ -141,7 +155,46 @@ export async function ncmSearch(keywords: string, limit = 5): Promise<NcmSongMet
   }));
 }
 
+/** 避免 ncma ↔ offline-playback ↔ favorites 环依赖：本地 mp3 直链在此解析 */
+function tryResolveLocalDownloadSong(ncmSongId: string): { url: string; durationMs: number } | null {
+  if (!ncmSongId.startsWith('local:')) return null;
+  try {
+    const base = decodeURIComponent(ncmSongId.slice('local:'.length));
+    if (!base || base.includes('..') || /[/\\]/.test(base) || !base.toLowerCase().endsWith('.mp3')) return null;
+    const dir = path.resolve(path.join(config.dataDir, 'downloads'));
+    const fp = path.resolve(dir, base);
+    if (!fp.startsWith(dir) || !fs.existsSync(fp)) return null;
+    const st = fs.statSync(fp);
+    if (st.size < 2048) return null;
+    const ms = Math.floor((st.size / (128_000 / 8)) * 1000);
+    const durationMs = Math.min(600_000, Math.max(180_000, ms));
+    return { url: `/api/local-audio-file/${encodeURIComponent(base)}`, durationMs };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 仅探测 NCM `/song/url` 是否给出非空直链（不调 yt-dlp）。
+ * `local:` 离线文件存在则 true；mock/无上游时对纯数字 id 视为可解析。
+ */
+export async function ncmSongHasPlayableUrl(ncmSongId: string): Promise<boolean> {
+  if (tryResolveLocalDownloadSong(ncmSongId)) return true;
+  if (config.ncmMock || !config.ncmApiBaseUrl) {
+    return /^\d+$/.test(ncmSongId);
+  }
+  try {
+    const body = await fetchJson<NcmUrlBody>('/song/url/v1', { id: ncmSongId, level: 'exhigh' });
+    const url = body.data?.[0]?.url;
+    return Boolean(url && String(url).trim());
+  } catch {
+    return false;
+  }
+}
+
 export async function ncmSongUrl(ncmSongId: string): Promise<{ url: string; durationMs: number }> {
+  const localHit = tryResolveLocalDownloadSong(ncmSongId);
+  if (localHit) return localHit;
   if (config.ncmMock || !config.ncmApiBaseUrl) {
     if (config.ncmMockUseYtdlp) return ytdlpGetUrl(ncmSongId);
     /** 默认跳过 yt-dlp：避免本机地理限制、「list index out of range」与排队时长刷屏。 */
@@ -155,9 +208,14 @@ export async function ncmSongUrl(ncmSongId: string): Promise<{ url: string; dura
     const durationMs = durationMsFromNcmTime(row?.time, 240_000);
     return { url, durationMs };
   } catch (e) {
+    const detail = e instanceof Error ? e.message : String(e);
+    if (!config.ncmYtdlpFallback) {
+      log.warn('[NCM] ncmSongUrl failed, yt-dlp fallback disabled', { ncmSongId, err: detail });
+      throw new NcmPlayableUnavailableError(ncmSongId, detail);
+    }
     log.warn('[NCM] ncmSongUrl failed, falling back to yt-dlp', {
       ncmSongId,
-      err: e instanceof Error ? e.message : e,
+      err: detail,
     });
     return ytdlpGetUrl(ncmSongId);
   }

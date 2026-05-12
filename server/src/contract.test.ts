@@ -28,6 +28,11 @@ describe('HTTP contract (ARCH_DOC / CONTRACT.yaml)', () => {
     expect(res.body.reason).toBe('no_active');
   });
 
+  it('POST /api/playback/next-offline rejects when online', async () => {
+    const res = await request(app).post('/api/playback/next-offline').expect(400);
+    expect(typeof res.body.error).toBe('string');
+  });
+
   it('GET /api/plan/today', async () => {
     const res = await request(app).get('/api/plan/today').set('X-Timezone', 'Asia/Shanghai').expect(200);
     expect(Array.isArray(res.body.blocks)).toBe(true);
@@ -103,5 +108,17 @@ describe('HTTP contract (ARCH_DOC / CONTRACT.yaml)', () => {
     },
     25_000,
   );
+
+  it('POST /api/playback-mode clears queue (then restore online)', async () => {
+    await request(app).post('/api/chat').send({ text: 'mode-clear-queue-test', replaceQueue: true }).expect(200);
+    let np = await request(app).get('/api/now').expect(200);
+    expect(np.body.type).not.toBe('idle');
+    await request(app).post('/api/playback-mode').send({ mode: 'offline', confirm: true }).expect(200);
+    np = await request(app).get('/api/now').expect(200);
+    expect(np.body.type).toBe('idle');
+    await request(app).post('/api/playback-mode').send({ mode: 'online', confirm: true }).expect(200);
+    np = await request(app).get('/api/now').expect(200);
+    expect(np.body.type).toBe('idle');
+  }, 25_000);
 });
 

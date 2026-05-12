@@ -300,12 +300,13 @@ components:
 
     DjScript:
       type: object
-      required: [schemaVersion, say, play, moodTag, segue]
+      required: [schemaVersion, say, play, moodTag]
       properties:
         schemaVersion:
           type: integer
         say:
           type: string
+          description: DJ 过渡文案（歌曲间隙前端文字显示，不再合成语音）
         play:
           type: array
           items:
@@ -314,8 +315,6 @@ components:
           type: string
           description: >-
             neutral | calm | focus | uplift | nostalgic（服务端非法则归为 neutral）。
-        segue:
-          type: string
         telemetry:
           type: object
           properties:
@@ -337,7 +336,7 @@ components:
       properties:
         kind:
           type: string
-          enum: [music, voice, idle]
+          enum: [music, idle]
         title:
           type: string
         artist:
@@ -363,7 +362,7 @@ components:
       properties:
         type:
           type: string
-          enum: [music, voice, idle]
+          enum: [music, idle]
         title:
           type: string
         artist:

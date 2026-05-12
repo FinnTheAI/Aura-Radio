@@ -6,9 +6,10 @@ import { deriveSessionMood, normalizeMoodTag } from './taste-mood.js';
 import type { ContextFragments } from './context-builder.js';
 import { config } from './config.js';
 import { logBrainClaudeSession } from './db.js';
+import { pickMockNcmSongId } from './mock-dj-pick.js';
 
 /**
- * Brain 在 **未** 设置 `BRAIN_MOCK=1` 时，不会在 Claude/MiniMax 失败后静默换用占位脚本；
+ * Brain 在 **未** 设置 `BRAIN_MOCK=1` 时，不会在 Claude（及可选 MiniMax HTTP 降级）失败后静默换用占位脚本；
  * 抛出本错误，由 HTTP 层返回 503。
  */
 export class BrainUnavailableError extends Error {
@@ -291,7 +292,7 @@ function parseDjJson(text: string): DjScript {
 
 function mockScript(fragments: ContextFragments): DjScript {
   const session = deriveSessionMood();
-  const pick = session.moodTag === 'focus' ? '29764564' : '441491828';
+  const pick = pickMockNcmSongId(session.moodTag);
   return {
     schemaVersion: 1,
     say: session.moodTag === 'focus' ? '' : '离线 Mock：给你一首刚刚好的背景乐。',
@@ -467,7 +468,7 @@ async function callMiniMaxHttp(fragments: ContextFragments): Promise<string> {
 /** Brain Adapter：优先本地 Claude，失败则 MiniMax HTTP。失败时 **不** 自动 Mock；仅 `BRAIN_MOCK=1` 可走占位脚本。 */
 export async function generateDjScript(
   fragments: ContextFragments,
-  options?: { mmxInvocationId?: string }
+  options?: { mmxInvocationId?: string; chatTraceId?: string },
 ): Promise<{
   script: DjScript;
   normalized: MoodTag;
@@ -484,7 +485,9 @@ export async function generateDjScript(
 
   // ==================== 缓存检查 ====================
   cleanupCache();
-  const cacheKey = generateCacheKey(fragments) + (options?.mmxInvocationId ? `_${options.mmxInvocationId.slice(0, 8)}` : '');
+  /** 每条请求独立缓存分区：`/api/chat` 须传 chatTraceId，否则同一时段反复唤醒会命中同一脚本 */
+  const invocationKey = options?.chatTraceId ?? options?.mmxInvocationId ?? '';
+  const cacheKey = generateCacheKey(fragments) + (invocationKey ? `_${invocationKey}` : '');
   const cached = recommendationCache.get(cacheKey);
   
   if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
@@ -572,8 +575,11 @@ export async function generateDjScript(
   log.error('brain unavailable (automatic mock disabled)', { err: lastErr, noMinimax });
   throw new BrainUnavailableError(
     [
-      'Brain 不可用：本地 Claude 未返回可解析结果，且 MiniMax HTTP 失败或不可用。',
-      noMinimax ? '未配置 MINIMAX_API_KEY，无法走 HTTP 降级。' : '',
+      'Brain 不可用：未能生成 DJ 脚本 JSON。',
+      '当前架构：① 优先本地 Claude CLI 编排（含 prompt 中的 mmx-cli 检索指引）；② 仅当 Claude 不可用时才尝试 MiniMax **文本补全** HTTP（生成脚本，不是网易云搜歌）。',
+      noMinimax
+        ? '未配置 MINIMAX_API_KEY，Claude 失败后无 HTTP 降级。'
+        : 'Claude 失败后已尝试 MiniMax HTTP，请求亦失败（详见详情）。',
       detail ? `详情：${detail.slice(0, 400)}` : '',
       '若仅需占位开发/测试，请显式设置环境变量 BRAIN_MOCK=1。',
     ]

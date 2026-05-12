@@ -18,7 +18,7 @@ type PlaybackMode = 'online' | 'offline';
 
 const metaEl = document.querySelector('#meta') as HTMLElement;
 const bootBtn = document.querySelector('#boot') as HTMLButtonElement;
-const newSegmentBtn = document.querySelector('#new-segment') as HTMLButtonElement;
+const nextTrackBtn = document.querySelector('#next-track') as HTMLButtonElement;
 const forcePlayBtn = document.querySelector('#force-play') as HTMLButtonElement;
 const sceneEl = document.querySelector('#scene') as HTMLElement;
 const audioEl = document.querySelector('#player') as HTMLAudioElement;
@@ -29,6 +29,37 @@ const djAnnounceEl = document.querySelector('#dj-announce') as HTMLElement;
 const modeStatusEl = document.querySelector('#mode-status') as HTMLElement;
 const modeToggleBtn = document.querySelector('#mode-toggle') as HTMLButtonElement;
 const favoriteBtn = document.querySelector('#favorite-btn') as HTMLButtonElement;
+const chatToggleBtn = document.querySelector('#chat-toggle') as HTMLButtonElement;
+const chatPanelEl = document.querySelector('#chat-panel') as HTMLElement;
+const bootLabelEl = document.querySelector('.boot-label') as HTMLElement;
+
+function setBootLabel(text: string) {
+  bootLabelEl.textContent = text;
+  bootBtn.setAttribute('aria-label', text);
+  bootBtn.title = text;
+}
+
+function setFavoriteChrome(label: string) {
+  favoriteBtn.title = label;
+  favoriteBtn.setAttribute('aria-label', label);
+}
+
+function syncChatSendGlow() {
+  chatSendBtn.classList.toggle('chat-send-active', chatInput.value.trim().length > 0);
+}
+
+async function applyRandomStageBackground() {
+  const el = document.getElementById('bg-layer');
+  if (!el) return;
+  try {
+    const res = await fetch('/api/background/random');
+    if (!res.ok) return;
+    const data = (await res.json()) as { url?: string };
+    if (data.url) el.style.backgroundImage = `url("${data.url}")`;
+  } catch {
+    /** 无目录或无图时保持纯色底 */
+  }
+}
 
 interface ChatDjScript {
   schemaVersion?: number;
@@ -37,6 +68,10 @@ interface ChatDjScript {
   play?: unknown[];
   segue?: string;
 }
+
+/** 联网「下一首」：replaceQueue + Brain；say 为导语，须与所选新歌气质一致 */
+const ONLINE_NEXT_TRACK_PROMPT =
+  '下一首：先选定一首与电台氛围相称的新歌，写两三句诗意导语作为对它的介绍与引子（要与所选歌曲气质一致），然后给出这首歌（勿重复上一首）。';
 
 const PIPELINE_BUSY_HINT = '暂时禁用：缓冲或等待开播完成后可再切歌 / 发送';
 const PIPELINE_SAFETY_TIMEOUT_MS = 180_000;
@@ -81,14 +116,17 @@ function setPipelineStatus(text: string) {
 }
 
 function setButtonsBusy(busy: boolean) {
-  newSegmentBtn.disabled = busy;
+  nextTrackBtn.disabled = busy;
   chatSendBtn.disabled = busy;
+  chatToggleBtn.disabled = busy;
   if (busy) {
-    newSegmentBtn.title = PIPELINE_BUSY_HINT;
+    nextTrackBtn.title = PIPELINE_BUSY_HINT;
     chatSendBtn.title = PIPELINE_BUSY_HINT;
+    chatToggleBtn.title = PIPELINE_BUSY_HINT;
   } else {
-    newSegmentBtn.removeAttribute('title');
-    chatSendBtn.removeAttribute('title');
+    nextTrackBtn.title = '下一首';
+    chatSendBtn.title = '发送';
+    chatToggleBtn.title = '对话';
   }
 }
 
@@ -131,7 +169,7 @@ function armPipelineExpectedTrace(traceId: string | undefined) {
 
 function tryNotifyPipelineOurSegmentPlaying(np: NowPlaying): void {
   if (!pipelineAwaitingMusic) return;
-  /** DJ 文案已随 music 的 djText 下发，流水线在音乐开始播放时结束 */
+  /** 文案在 music.djText；voice 轨在 hydrate 开头已 skip，不会走到此处 */
   if (np.type !== 'music') return;
   if (pipelineExpectedTraceId && np.traceId !== pipelineExpectedTraceId) return;
   pipelineAwaitingMusic = false;
@@ -176,6 +214,12 @@ function updateDjAnnouncePanel(text: string | undefined): void {
   }
   djAnnounceEl.textContent = t;
   djAnnounceEl.hidden = false;
+}
+
+/** 服务端 discovery 解析兜底时在页面底部 meta 区追加说明 */
+function appendPlaybackHints(hints: string[] | undefined): void {
+  if (!hints?.length) return;
+  metaEl.textContent += `\n\n${hints.join('\n')}`;
 }
 
 /* ========== 音频工具 ========== */
@@ -272,6 +316,32 @@ async function hydrateFromNow(np: NowPlaying) {
   delete audioEl.dataset.auraTrace;
   delete audioEl.dataset.auraKind;
 
+  if (np.type === 'idle') {
+    updateDjAnnouncePanel(undefined);
+    resetAudioElement();
+    metaEl.textContent = 'idle · 队列暂无曲目';
+    setForcePlayVisible(false);
+    favoriteBtn.hidden = true;
+    currentNcmSongId = undefined;
+    if (pipelineAwaitingMusic) abortDjPipelineOnError();
+    return;
+  }
+
+  /** 产品路径：口播仅为大字 djText，不应再播放 TTS voice 轨（否则会卡在「正在缓冲音频」） */
+  if (np.type === 'voice') {
+    noteDjPipelineStage('正在跳过口播轨…');
+    try {
+      const res = await fetch('/api/queue/skip', { method: 'POST' });
+      const body = (await res.json()) as { ok?: boolean; error?: string };
+      if (!res.ok) throw new Error(body.error ?? String(res.status));
+      await pullNowAndPlay();
+    } catch (e) {
+      abortDjPipelineOnError();
+      metaEl.textContent += `\n跳过口播失败：${String(e)}`;
+    }
+    return;
+  }
+
   const djCopy = np.djText?.trim() || np.sayText?.trim();
   if (djCopy) updateDjAnnouncePanel(djCopy);
   else updateDjAnnouncePanel(undefined);
@@ -282,6 +352,7 @@ async function hydrateFromNow(np: NowPlaying) {
     metaEl.textContent =
       `${np.type} · ${np.moodTag ?? ''}` + (np.title ? ` · ${np.title}` : '') + '\n暂无可播放音频 URL。';
     setForcePlayVisible(false);
+    if (pipelineAwaitingMusic) abortDjPipelineOnError();
     return;
   }
 
@@ -289,7 +360,7 @@ async function hydrateFromNow(np: NowPlaying) {
     `${np.type} · ${np.moodTag ?? ''}${np.title ? ` · ${np.title}` : ''}${np.artist ? ` — ${np.artist}` : ''}` +
     (np.ncmSongId ? ` · ncm:${np.ncmSongId}` : '') +
     `\ntrace:${np.traceId ?? '—'}`;
-  if (np.type === 'music' || np.type === 'voice') {
+  if (np.type === 'music') {
     tryNotifyPipelineOurSegmentPlaying(np);
   }
 
@@ -300,10 +371,12 @@ async function hydrateFromNow(np: NowPlaying) {
   if (np.type === 'music' && np.ncmSongId && /^\d+$/.test(np.ncmSongId)) {
     currentNcmSongId = np.ncmSongId;
     favoriteBtn.hidden = false;
-    favoriteBtn.textContent = `收藏到离线（${np.title ?? np.ncmSongId}）`;
+    favoriteBtn.disabled = false;
+    setFavoriteChrome(`收藏 · ${np.title ?? np.ncmSongId}`);
   } else {
     currentNcmSongId = undefined;
     favoriteBtn.hidden = true;
+    favoriteBtn.disabled = false;
   }
 
   const absUrl = normalizeUrl(playRaw);
@@ -373,16 +446,11 @@ async function drainHydrateQueue() {
 
 /* ========== API ========== */
 
-async function pullNowAndPlay(chatTraceId?: string): Promise<NowPlaying | undefined> {
+async function pullNowAndPlay(): Promise<NowPlaying | undefined> {
   const res = await fetch('/api/now');
   if (!res.ok) return;
   const np = (await res.json()) as NowPlaying;
   await enqueueHydrateFromNow(np);
-  // idle 无 traceId，不能与本次请求的 trace 比较；此前会误报「仍是上一段」与「新对话已排队」
-  if (chatTraceId && np.type !== 'idle' && np.traceId && chatTraceId !== np.traceId) {
-    metaEl.textContent +=
-      '\n提示：当前播放仍是上一段节目（trace 与本次请求不同）。若刚发送过对话，新内容通常在队列中，当前曲结束后会接上新的 DJ 文案与歌曲。';
-  }
   return np;
 }
 
@@ -435,15 +503,20 @@ function runSilentGesturePrimeOnce() {
 async function postDjChat(
   text: string,
   replaceQueue: boolean,
-): Promise<{ traceId: string; djScript?: ChatDjScript }> {
+): Promise<{ traceId: string; djScript?: ChatDjScript; playbackHints?: string[] }> {
   const res = await fetch('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-Timezone': Intl.DateTimeFormat().resolvedOptions().timeZone },
     body: JSON.stringify({ text, replaceQueue }),
   });
-  const body = (await res.json()) as { error?: string; traceId?: string; djScript?: ChatDjScript };
+  const body = (await res.json()) as {
+    error?: string;
+    traceId?: string;
+    djScript?: ChatDjScript;
+    playbackHints?: string[];
+  };
   if (!res.ok) throw new Error(body.error ?? String(res.status));
-  return { traceId: body.traceId as string, djScript: body.djScript };
+  return { traceId: body.traceId as string, djScript: body.djScript, playbackHints: body.playbackHints };
 }
 
 function hasRenderableAudioSrc(): boolean {
@@ -457,7 +530,7 @@ async function djSpeechThenPullNow(
 ) {
   suppressWsNowPlaying++;
   try {
-    const np = await pullNowAndPlay(traceId);
+    const np = await pullNowAndPlay();
     finishPipelineIfHeadIsNotOurRequest(traceId, np);
   } finally {
     suppressWsNowPlaying--;
@@ -471,7 +544,7 @@ bootBtn.addEventListener('click', async () => {
 
   if (hasRenderableAudioSrc() && !audioEl.paused && !audioEl.ended) {
     audioEl.pause();
-    bootBtn.textContent = '已暂停 — 点此继续播放';
+    setBootLabel('已暂停 — 点此继续播放');
     return;
   }
 
@@ -479,7 +552,7 @@ bootBtn.addEventListener('click', async () => {
     try {
       audioEl.muted = false;
       await audioEl.play();
-      bootBtn.textContent = '已唤醒 — 悬停此处可显示指令';
+      setBootLabel('已唤醒 — 悬停此处可显示指令');
     } catch (e) {
       metaEl.textContent += `\n继续播放失败：${String(e)}`;
       setForcePlayVisible(true);
@@ -489,10 +562,11 @@ bootBtn.addEventListener('click', async () => {
 
   runSilentGesturePrimeOnce();
   await resumeAudioContextIfAny();
-  bootBtn.textContent = '已唤醒 — 悬停此处可显示指令';
+  setBootLabel('已唤醒 — 悬停此处可显示指令');
   try {
     beginDjPipeline('正在请求 DJ…');
     const body = await postDjChat('初次见面，帮我开始一段轻柔的电台。', true);
+    appendPlaybackHints(body.playbackHints);
     noteDjPipelineStage('正在生成 DJ 文案与选曲…');
     armPipelineExpectedTrace(body.traceId);
     lastPlayedKey = '';
@@ -510,25 +584,42 @@ bootBtn.addEventListener('click', async () => {
   }
 });
 
-newSegmentBtn.addEventListener('click', async () => {
+nextTrackBtn.addEventListener('click', async () => {
   userAllowedPlayback = true;
   runSilentGesturePrimeOnce();
   await resumeAudioContextIfAny();
+  await refreshPlaybackMode();
   try {
+    if (playbackMode === 'offline') {
+      beginDjPipeline('正在切换离线下一首…');
+      const res = await fetch('/api/playback/next-offline', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      });
+      const body = (await res.json()) as { error?: string; traceId?: string; djScript?: ChatDjScript };
+      if (!res.ok) throw new Error(body.error ?? String(res.status));
+      noteDjPipelineStage('正在加载本地曲目…');
+      armPipelineExpectedTrace(body.traceId);
+      lastPlayedKey = '';
+      await djSpeechThenPullNow(body.traceId, body.djScript);
+      if (pipelineAwaitingMusic) noteDjPipelineStage('正在缓冲音频…');
+      metaEl.textContent += '\n已切换到离线列表下一首。';
+      return;
+    }
+
     beginDjPipeline('正在请求 DJ…');
-    const body = await postDjChat(
-      '换一段：与刚刚明显不同的选曲与 DJ 文案（可短），避免重复上一段的立意。',
-      true,
-    );
+    const body = await postDjChat(ONLINE_NEXT_TRACK_PROMPT, true);
+    appendPlaybackHints(body.playbackHints);
     noteDjPipelineStage('正在生成 DJ 文案与选曲…');
     armPipelineExpectedTrace(body.traceId);
     lastPlayedKey = '';
     await djSpeechThenPullNow(body.traceId, body.djScript);
     if (pipelineAwaitingMusic) noteDjPipelineStage('正在缓冲音频…');
-    metaEl.textContent += '\n换段：队列已重置，正在播放新片段。';
+    metaEl.textContent += '\n下一首：已开始播放新片段。';
   } catch (e) {
     abortDjPipelineOnError();
-    metaEl.textContent = `换一段失败：${String(e)}`;
+    metaEl.textContent += `\n下一首失败：${String(e)}`;
   }
 });
 
@@ -553,7 +644,9 @@ chatSendBtn.addEventListener('click', async () => {
   await resumeAudioContextIfAny();
   try {
     beginDjPipeline('正在请求 DJ…');
-    const body = await postDjChat(text, false);
+    /** replaceQueue：立即重置队列并按本条对话选曲（否则会排到当前曲之后，易被误判为「聊天无效」） */
+    const body = await postDjChat(text, true);
+    appendPlaybackHints(body.playbackHints);
     noteDjPipelineStage('正在生成 DJ 文案与选曲…');
     armPipelineExpectedTrace(body.traceId);
     await djSpeechThenPullNow(body.traceId, body.djScript);
@@ -567,6 +660,17 @@ chatSendBtn.addEventListener('click', async () => {
 chatInput.addEventListener('keydown', (ev) => {
   if (ev.key === 'Enter') chatSendBtn.click();
 });
+chatInput.addEventListener('input', syncChatSendGlow);
+
+chatToggleBtn.addEventListener('click', () => {
+  const opening = chatPanelEl.hidden;
+  chatPanelEl.hidden = !opening;
+  chatToggleBtn.setAttribute('aria-expanded', opening ? 'true' : 'false');
+  if (opening) {
+    chatInput.focus();
+    syncChatSendGlow();
+  }
+});
 
 /* ========== 收藏到离线 ========== */
 
@@ -574,7 +678,7 @@ favoriteBtn.addEventListener('click', async () => {
   const id = currentNcmSongId;
   if (!id) return;
   favoriteBtn.disabled = true;
-  favoriteBtn.textContent = '收藏中…';
+  setFavoriteChrome('收藏中…');
   try {
     const res = await fetch('/api/favorite', {
       method: 'POST',
@@ -584,16 +688,16 @@ favoriteBtn.addEventListener('click', async () => {
     const data = (await res.json()) as { ok?: boolean; message?: string; status?: string };
     if (res.ok && data.ok) {
       metaEl.textContent += `\n${data.message ?? '已收藏'}`;
-      favoriteBtn.textContent = `已收藏（${data.status === 'downloaded' ? '可离线播放' : '下载中'})`;
+      setFavoriteChrome(`已收藏 · ${data.status === 'downloaded' ? '可离线播放' : '下载中'}`);
     } else {
       metaEl.textContent += `\n收藏失败：${(data as { error?: string }).error ?? '未知错误'}`;
-      favoriteBtn.disabled = false;
-      favoriteBtn.textContent = '收藏到离线';
+      setFavoriteChrome('收藏');
     }
   } catch (e) {
     metaEl.textContent += `\n收藏失败：${String(e)}`;
+    setFavoriteChrome('收藏');
+  } finally {
     favoriteBtn.disabled = false;
-    favoriteBtn.textContent = '收藏到离线';
   }
 });
 
@@ -612,7 +716,10 @@ modeToggleBtn.addEventListener('click', async () => {
     if (res.ok) {
       playbackMode = next;
       modeStatusEl.textContent = `播放模式：${label}`;
-      metaEl.textContent += `\n已切换至${label}模式。`;
+      metaEl.textContent += `\n已切换至${label}模式（已清空播放队列，请点「下一首」或发送对话开始）。`;
+      lastPlayedKey = '';
+      userAllowedPlayback = true;
+      await pullNowAndPlay();
     }
   } catch {
     metaEl.textContent += '\n模式切换失败。';
@@ -683,11 +790,13 @@ if ('serviceWorker' in navigator) {
 }
 
 void refreshPlaybackMode();
+void applyRandomStageBackground();
+syncChatSendGlow();
 
 audioEl.addEventListener('ended', () => {
   const traceId = audioEl.dataset.auraTrace;
   const kind = audioEl.dataset.auraKind;
-  if (!traceId || kind !== 'music') return;
+  if (!traceId || (kind !== 'music' && kind !== 'voice')) return;
 
   void (async () => {
     try {
@@ -709,10 +818,28 @@ audioEl.addEventListener('error', () => {
   if (code !== null && code === lastReportedAudioError) return;
   lastReportedAudioError = code;
   lastPlayedKey = '';
+  if (pipelineAwaitingMusic) abortDjPipelineOnError();
   const hint =
     code === 4
       ? '（code=4：多为格式/解码或错误的跨域策略；已去掉 crossOrigin，请硬刷新后再试）'
       : '（多为网络或跨域限制）';
-  metaEl.textContent += `\n<audio> 加载失败 code=${code ?? '?'}${hint}`;
+  metaEl.textContent += `\n<audio> 加载失败 code=${code ?? '?'}${hint} · 尝试跳过当前条目`;
   setForcePlayVisible(true);
+
+  const traceId = audioEl.dataset.auraTrace;
+  const kind = audioEl.dataset.auraKind;
+  if (traceId && (kind === 'music' || kind === 'voice')) {
+    void (async () => {
+      try {
+        const res = await fetch('/api/queue/advance', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ traceId }),
+        });
+        if (res.ok) await pullNowAndPlay();
+      } catch {
+        /** */
+      }
+    })();
+  }
 });

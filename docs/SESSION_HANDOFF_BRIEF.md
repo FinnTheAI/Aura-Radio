@@ -38,7 +38,7 @@
 | 用户语料 + 云端口味 + `taste-cloud.md` | `server/src/context-builder.ts` |
 | 网易 API 代理、播放 URL | `server/src/ncma.js`、`config` 中 `NCM_API_BASE_URL` |
 | discovery → 真实 `ncmSongId` | `server/src/song-candidates.ts`（`resolvePlayFromDiscovery`） |
-| 播放队列、TTS、预取口播 | `server/src/queue-engine.ts`、`server/src/tts.ts` |
+| 播放队列、文案下发 | `server/src/queue-engine.ts` |
 | 前端播放、WS、`queue` 预加载下一首音乐 | `client/src/main.ts`（含 `queueMusicScanStartIndex` 跳过队头当前项） |
 
 ---
@@ -61,8 +61,8 @@
 
 ### C 板块：前端（播放、WS、体验）
 
-- **交互**：单 `<audio>` 切源仍有感知间隙；虽已对 **`queue` 做下一首 `music` 预加载**，口播段 **voice** 与音乐的衔接、**suppressWsNowPlaying** 期间不更新预加载等，仍可能导致「听感不同步」。
-- **口播与歌曲不同步**：队列顺序为 **TTS 口播 → 音乐**（及多段），若客户端仍按旧逻辑「先拉一次 now」或 WS 乱序，会出现**口播未结束就切歌**或**元数据/文案与当前条不一致**。
+- **交互**：单 `<audio>` 切源仍有感知间隙；虽已对 **`queue` 做下一首 `music` 预加载**，间隙文字显示期间的衔接、**suppressWsNowPlaying** 期间不更新预加载等，仍可能导致「听感不同步」。
+- **文案与歌曲不同步**：队列顺序为 **间隙文案 → 音乐**，若客户端仍按旧逻辑「先拉一次 now」或 WS 乱序，会出现**文案未结束就切歌**或**元数据/文案与当前条不一致**。
 - **延迟**：首包 `/api/chat` 慢 ≠ 播放侧一定慢，但用户体感上常混为一谈，需 **前端超时与 loading 状态** 产品化。
 
 ---
@@ -71,18 +71,18 @@
 
 1. **画像注入**：对 `taste-cloud.md` 可做结构化摘要以省 token；**当前默认整文件注入**（`TASTE_CLOUD_MAX_CHARS` 未设置即完整读入，见 `context-builder.ts:readTasteCloudMd()`）。需要限长时可设 `TASTE_CLOUD_MAX_CHARS=1500` 等。
 2. **B 链可靠性与可观测性**：Brain 失败原因结构化落日志；明确 Mock 触发条件。
-3. **C 链播放**：统一以 **WS `now_playing` + `queue`** 为真源；评估口播期间是否仍允许预加载「下一首音乐」；必要时双缓冲或淡入淡出。（**已落地**：口播 voice 期间允许 queue 预加载下一首音乐；voice ws suppress 动态控制 + 500ms 保险）
+3. **C 链播放**：统一以 **WS `now_playing` + `queue`** 为真源；评估文案间隙是否仍允许预加载「下一首音乐」；必要时双缓冲或淡入淡出。（**已落地**：间隙文案期间允许 queue 预加载下一首音乐；ws suppress 动态控制 + 500ms 保险）
 4. **端到端 SLA**：区分「聊天生成慢」与「切歌缓冲慢」，分别优化。
 
 ### 近期已落地（2026-05-11）
 
 | 功能 | 路径 | 说明 |
 |------|------|------|
-| 口播期间 queue 预加载 | `client/src/main.ts` WS handler | voice 类型时 now_playing suppress，但 queue 仍可预加载下一首 music |
-| voice ws suppress 动态控制 | `client/src/main.ts:suppressWsForDuration()` | 根据 durationMs 动态 suppress，避免硬编码时长 |
+| 文案间隙 queue 预加载 | `client/src/main.ts` WS handler | 间隙文案期间 now_playing suppress，但 queue 仍可预加载下一首 music |
+| ws suppress 动态控制 | `client/src/main.ts:suppressWsForDuration()` | 根据 durationMs 动态 suppress，避免硬编码时长 |
 | taste-cloud.md 注入 | `server/src/context-builder.ts:readTasteCloudMd()` | 默认完整；`TASTE_CLOUD_MAX_CHARS` 设正整数则截断；`0`=不注入该文件 |
 | 离线下载状态 | `server/src/favorites.ts` | `POST /api/favorite` → 异步下载 → `GET /api/local-audio/:songId.mp3` 同源直出 |
-| TTS 超限降级 | `server/src/queue-engine.ts` | TTS 失败用 mockVoiceUrl 占位（SoundHelix）|
+| 文案降级 | `server/src/queue-engine.ts` | Brain 失败时用默认文案占位 |
 | mmx Web Search 节流 | `brain.ts`、`mmx-cli-gate.ts`、`next-track-segment.ts` | 单次 Brain 至多 1x `mmx-cli search`（gate 硬性）；`DjScript.play` 固定 1 首；单曲 natural 播完且队列空时自动再走一轮 Brain（`NEXT_TRACK_DISCOVERY_COOLDOWN_MS`/`MMX_MAX_SEARCH_PER_INVOCATION` 可调）|
 
 ---

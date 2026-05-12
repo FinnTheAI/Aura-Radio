@@ -3,7 +3,7 @@ import path from 'node:path';
 import express from 'express';
 import cors from 'cors';
 import type { QueueEngine } from './queue-engine.js';
-import { newTraceId } from './queue-engine.js';
+import { newTraceId, PlayableAudioUnavailableError } from './queue-engine.js';
 import { loadUserBundle } from './user-data.js';
 import { assembleContext, persistUserTurn, persistAssistantJson, redactForDump } from './context-builder.js';
 import { generateDjScript, BrainUnavailableError } from './brain.js';
@@ -20,7 +20,13 @@ import { neteaseCloudSyncEligible, syncNeteaseCloudToSqlite } from './netease-cl
 import { registerOfflineFavoriteRoutes, cleanupOfflineFavoritesOrphans } from './favorites.js';
 import { buildSongCandidatesFromNCM, formatCandidatesForPrompt, resolvePlayFromDiscovery } from './song-candidates.js';
 import { getPlaybackMode, setPlaybackMode } from './playback-mode.js';
-import { buildOfflineFolderDjScript, registerLocalAudioFileRoute } from './offline-playback.js';
+import {
+  buildOfflineFolderDjScript,
+  buildOfflineDjScriptForBasename,
+  nextOfflineBasenameAfter,
+  registerLocalAudioFileRoute,
+} from './offline-playback.js';
+import { registerBackgroundPickerRoutes } from './background-picker.js';
 
 function djScriptFromCliHit(hit: CliSongHit, keyword: string): DjScript {
   return {
@@ -48,6 +54,7 @@ export function buildExpressApp(queue: QueueEngine, stream: StreamHub) {
 
   registerOfflineFavoriteRoutes(app, stream);
   registerLocalAudioFileRoute(app);
+  registerBackgroundPickerRoutes(app);
 
   /* 启动时清理：DB 标记已下载、但文件缺失的离线收藏行 */
   try { cleanupOfflineFavoritesOrphans(); } catch { /* */ }
@@ -78,6 +85,33 @@ export function buildExpressApp(queue: QueueEngine, stream: StreamHub) {
         typeof req.body?.sessionId === 'string' && req.body.sessionId.trim()
           ? req.body.sessionId.trim()
           : newTraceId();
+
+      persistUserTurn(text, traceId);
+
+      if (getPlaybackMode() === 'offline') {
+        try {
+          const { script, djAnnounce } = buildOfflineFolderDjScript(text);
+          let { moodTag, coerced } = normalizeMoodTag(script.moodTag);
+          if (coerced) log.warn('/api/chat offline moodTag coerced');
+          const scriptNorm = { ...script, moodTag };
+          const replaceQueue = Boolean(req.body?.replaceQueue);
+          if (replaceQueue) {
+            await queue.resetQueueAndEnqueueFromScript(scriptNorm, traceId, { djAnnounce });
+          } else {
+            await queue.enqueueFromScript(scriptNorm, traceId, { djAnnounce });
+          }
+          persistAssistantJson(JSON.stringify({ script: scriptNorm, source: 'offline-chat', moodTag }), traceId);
+          return res.json({
+            djScript: { ...scriptNorm, moodTag },
+            queued: true,
+            traceId,
+          });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return res.status(503).json({ error: msg, traceId });
+        }
+      }
+
       const user = loadUserBundle();
       const skipCandidateBuild = process.env.AURA_SKIP_NCM_CANDIDATES === '1';
       const candidates = skipCandidateBuild ? [] : await buildSongCandidatesFromNCM();
@@ -91,8 +125,6 @@ export function buildExpressApp(queue: QueueEngine, stream: StreamHub) {
         nowPlaying,
         songCandidatesPrompt,
       });
-
-      persistUserTurn(text, traceId);
 
       if (config.neteaseCliPlayEnabled) {
         const keyword = extractPlayKeyword(text);
@@ -145,7 +177,9 @@ export function buildExpressApp(queue: QueueEngine, stream: StreamHub) {
         }
       }
 
-      const { script: rawScript, normalized, usedFallback } = await generateDjScript(fragments);
+      const { script: rawScript, normalized, usedFallback } = await generateDjScript(fragments, {
+        chatTraceId: traceId,
+      });
       if (usedFallback) {
         log.info('/api/chat used MiniMax HTTP instead of local Claude CLI', { traceId });
       }
@@ -157,7 +191,7 @@ export function buildExpressApp(queue: QueueEngine, stream: StreamHub) {
         });
       }
       const excludeIds = nowPlaying.type !== 'idle' && nowPlaying.ncmSongId ? [nowPlaying.ncmSongId] : [];
-      const resolved = await resolvePlayFromDiscovery(rawScript.play, candidates, excludeIds);
+      const { play: resolved, playbackHints } = await resolvePlayFromDiscovery(rawScript.play, candidates, excludeIds);
       const script = { ...rawScript, play: resolved };
 
       persistAssistantJson(JSON.stringify({ script, normalized, usedFallback }), traceId);
@@ -173,6 +207,7 @@ export function buildExpressApp(queue: QueueEngine, stream: StreamHub) {
         djScript: { ...script, moodTag: normalized },
         queued: true,
         traceId,
+        ...(playbackHints.length ? { playbackHints } : {}),
       });
     } catch (e) {
       if (e instanceof BrainUnavailableError) {
@@ -184,7 +219,22 @@ export function buildExpressApp(queue: QueueEngine, stream: StreamHub) {
         res.status(503).json({
           error: e.message,
           code: e.code,
-          hint: '仅当显式设置 BRAIN_MOCK=1 时使用占位 DJ 脚本（开发与离线验收）。',
+          hint:
+            '排查：本机是否可运行 Claude CLI；代理/网络是否正常。可选配置 MINIMAX_API_KEY 作为 Claude 失败后的脚本生成降级。开发与验收可设 BRAIN_MOCK=1。',
+          traceId: tid,
+        });
+        return;
+      }
+      if (e instanceof PlayableAudioUnavailableError) {
+        const tid =
+          typeof req.body?.sessionId === 'string' && req.body.sessionId.trim()
+            ? req.body.sessionId.trim()
+            : newTraceId();
+        stream.broadcast({ type: 'error', message: e.message, traceId: tid });
+        res.status(503).json({
+          error: e.message,
+          code: e.code,
+          hint: '请确认 NCM 代理可用并已配置 MUSIC_U / NCM_UPSTREAM_COOKIE；可选打开 NCM_YTDLP_FALLBACK=1（不推荐生产）。',
           traceId: tid,
         });
         return;
@@ -325,7 +375,48 @@ export function buildExpressApp(queue: QueueEngine, stream: StreamHub) {
     if (!confirm) return res.status(400).json({ error: '需二次确认（body.confirm: true）' });
     if (raw !== 'online' && raw !== 'offline') return res.status(400).json({ error: '非法 mode，仅 online / offline' });
     setPlaybackMode(raw);
+    queue.clearAll();
     res.json({ mode: raw });
+  });
+
+  app.post('/api/playback/next-offline', async (_req, res) => {
+    if (getPlaybackMode() !== 'offline') {
+      return res.status(400).json({ error: '当前为联网模式：「下一首」请走 /api/chat（replaceQueue）。' });
+    }
+    const traceId = newTraceId();
+    try {
+      const now = queue.getNow();
+      let curBasename: string | undefined;
+      if (now.type === 'music' && now.ncmSongId?.startsWith('local:')) {
+        try {
+          curBasename = decodeURIComponent(now.ncmSongId.slice('local:'.length));
+        } catch {
+          curBasename = undefined;
+        }
+      }
+      const nextBase = nextOfflineBasenameAfter(curBasename);
+      if (!nextBase) {
+        return res.status(503).json({
+          error: '离线库无可用 mp3（请先收藏或将文件放入 data/downloads）',
+          traceId,
+        });
+      }
+      const { script, djAnnounce } = buildOfflineDjScriptForBasename(nextBase, '下一首');
+      let { moodTag, coerced } = normalizeMoodTag(script.moodTag);
+      if (coerced) log.warn('/api/playback/next-offline moodTag coerced');
+      const scriptNorm = { ...script, moodTag };
+      await queue.resetQueueAndEnqueueFromScript(scriptNorm, traceId, { djAnnounce });
+      stream.broadcast({ type: 'now_playing', payload: queue.getNow() });
+      stream.broadcast({ type: 'queue', items: queue.peek(8) });
+      res.json({
+        djScript: { ...scriptNorm, moodTag },
+        queued: true,
+        traceId,
+      });
+    } catch (e) {
+      log.warn('/api/playback/next-offline failed', { err: String(e) });
+      res.status(500).json({ error: String(e), traceId });
+    }
   });
 
   app.post('/api/queue/skip', (_req, res) => {

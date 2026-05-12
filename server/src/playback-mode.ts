@@ -29,6 +29,13 @@ function save(): void {
 
 load();
 
+// 强制在线模式（可通过环境变量覆盖）
+if (process.env.FORCE_ONLINE_MODE === '1') {
+  mode = 'online';
+  save();
+  console.log('[playback-mode] Force online mode by env');
+}
+
 export function getPlaybackMode(): PlaybackMode {
   return mode;
 }

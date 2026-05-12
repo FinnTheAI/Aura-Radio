@@ -2,7 +2,7 @@
 
 **文档性质**：本项目在「Claudio 施工图」四层结构上迭代的规范性描述（SPEC），并附带可并行拆分的 Agent 执行计划（PLAN）。
 
-**版本**：0.2-baseline
+**版本**：0.2.1-baseline
 
 **状态**：已与机器可读契约 [`CONTRACT.yaml`](./CONTRACT.yaml) 对齐，可作为实现与评审基准。
 
@@ -16,7 +16,7 @@
 |------------|----------------|
 | BRAIN（Claude Code 架构） | **Claude Code 分层架构**：意图分流 → Context Builder → 大脑适配器（Executor 通过适配器调用 **MiniMax** 等底层模型）；输出 JSON 结构化脚本 |
 | MUSIC（网易云 API） | **[NeteaseCloudMusicApi Enhanced](https://github.com/neteasecloudmusicapienhanced/api-enhanced)**（或兼容的 NeteaseCloudMusicApi 系 HTTP 代理）；**长期要求代理进程常驻**，运维与选型见 **[NCM_UPSTREAM.md](./NCM_UPSTREAM.md)** |
-| VOICE / 播报 | MiniMax 生成 DJ 脚本（say 字段）+ 客户端 TTS（或后续接入其他语音合成） |
+| 文案 / 过渡语 | Brain 生成 DJ 文案（say 字段）→ 前端间隙文字显示 |
 | 前端 PWA + 流媒体 | **Client**：宿主页 + `<audio>` 播放队列 + **Three.js / GLSL** 频谱驱动的粒子场景 |
 | 本地状态与记忆 | **Server**：**SQLite** 持久化（`STATE_DB_PATH` 或 `$DATA_DIR/state.db`），可迁移 Postgres；与用户品味、播放史、调度痕迹 |
 
@@ -26,9 +26,9 @@
 
 1. **思考外包**：自然语言理解与 DJ 话术生成由 MiniMax 完成；规则化调度可由代码确定性执行，仅在歧义处回退到模型。
 2. **理解留人**：长期偏好、情绪定义、日程规则以**可读文件或显式数据结构**存放，可追溯、可版本化。
-3. **单源播放**：同一时间轴上仅一个「当前音频」源流（音乐或 MiniMax 语音），Client 负责淡入淡出与可视化采样。
+3. **单源播放**：同一时间轴上仅一个「当前音频」源流（音乐），间隙文字显示期间音频暂停，Client 负责淡入淡出与可视化采样。
 4. **视觉从属于音频**：粒子与 Shader 由 **AnalyserNode 频谱/能量序列**驱动；极简建筑空间、氛围感空间图像（低饱和、光影序列、几何逻辑）为容器，不参与业务决策。
-5. **留白与呼吸（播报克制）**：AI DJ 不应在每首歌之间强制播报，需具备「留白」机制。当处于深度专注（例如 **Focus** 情绪标签）时，可连续播放 3–4 首纯音乐，仅通过底层视觉（粒子呼吸）维持陪伴感，避免语音过度打扰。
+5. **留白与呼吸（文案克制）**：AI DJ 不应在每首歌之间强制显示文案，需具备「留白」机制。当处于深度专注（例如 **Focus** 情绪标签）时，可连续播放 3–4 首纯音乐，仅通过底层视觉（粒子呼吸）维持陪伴感，避免文字干扰。
 
 ---
 
@@ -41,14 +41,27 @@
 3. **C 品味分析（Server）**：融合 A+B，输出结构化画像与非黑盒依据字段。
 4. **D 情绪标签层**：规范化枚举（如 calm / focus / uplift / nostalgic）与置信度；可选时段/天气/日程修正。
 5. **E 上下文装配**：persona + 画像 + 环境 + 记忆 + 工具结果 → 单一 prompt 包。
-6. **F MiniMax 2.6**：生成结构化 DJ 脚本与播报音频（流或片段）。
-7. **G 队列执行（Server）**：`play[]` → NCM URL；`say` → 语音片段；交错入队。
+6. **F Brain（MiniMax/Claude）**：生成结构化 DJ 脚本（say 文案 + play 歌单）。
+7. **G 队列执行（Server）**：`play[]` → NCM URL；`say` 文案随队列下发，前端歌曲间隙文字显示。
 8. **H Client 音频图**：`<audio>` + Web Audio Analyser；HTTP/WS 同步 now-playing。
 9. **I Three.js + GLSL**：频域/时域 → uniforms → 粒子呼吸与氛围感空间图像。
 
 **契约**：情绪标签为品味与话术之间的显式语义层；频谱链路与业务降级解耦（话术失败时可视化仍可基于能量门限呼吸）。
 
 **视觉映射（频谱 → 粒子）**：低频能量控制粒子的呼吸缩放，高频细节驱动粒子的闪烁与流转。
+
+### 2.1 客户端视觉粒子（Three.js Points，已落地）
+
+| 项目 | 说明 |
+|------|------|
+| **实现文件** | `client/src/visual.ts`（`ShaderMaterial` 内联顶点/片段着色器）；意图与注释备份见 `client/src/visual_logic.glsl` |
+| **参数收口** | 粒子数量、球采样半径、相机景深归一化、`gl_PointSize` 区间、随机发光幅度等集中在 **`AURA_PARTICLES`** 常量；顶点着色器由模板注入数值时须经 **`glslFloat()`**，避免整数（如 `29`）写入 `mix()` 导致 GLSL 编译失败、粒子整层不显示 |
+| **画布与层级** | `WebGLRenderer({ alpha: true })` + `setClearColor(0x000000, 0)`，画布透明，下层 `#bg-layer` 建筑底图可见（见 `COMPONENT_GRAMMAR.md`） |
+| **混合模式** | **`AdditiveBlending`**：`toneMapped: false`，只叠加亮度，贴合「金粉 / 高键微粒」参考，避免 NormalBlending 在透明画布上的轮廓脏边 |
+| **空间分布** | 均匀球体内体积采样：`rr = cbrt(U) * R`，无分层半球伪影 |
+| **顶点动力学** | 由位置推导方位角/极角；径向脉冲 + 切向回旋 + 轴向微摆（相位随方向变化）；`uLow`/`uHigh` 调制 `pulse`/`flicker`；景深驱动 **`gl_PointSize`**（近小远大柔） |
+| **片段外观** | 低饱和 dust/champagne 基底 → 径向混入近白芯（`hot` 高斯 + `halo` 幂次）；`shell` 宽柔边；**`rgb` 分量下限 clamp**，减弱边缘发灰；每粒子 **`vGlowAmp`** 随机强弱 |
+| **可选后续** | 全屏 **Bloom 后处理**（EffectComposer）仍为增强项，当前仅靠粒子内高光近似 |
 
 ---
 
@@ -63,7 +76,7 @@
 | NCM Adapter | 上游 HTTP（**`NCM_API_BASE_URL`**，推荐本机/内网 **Enhanced 常开**；见 **[NCM_UPSTREAM.md](./NCM_UPSTREAM.md)**）为 Brain 输出的 `ncmSongId` 取元数据/外链；**仅**在未配置或运维允许时降级 yt-dlp；`NETEASE_CLI_ENABLED` 本机抢答 **默认关**（Brain 优先） | 默认持久化全量原始响应 |
 | Context Builder | 多片段 prompt 装配 | 日志泄露密钥 |
 | MiniMax Adapter | 调用、解析 JSON、重试熔断 | 耦合前端路由 |
-| Queue & Playback | now/next、播报/歌曲交错 | Three.js |
+| Queue & Playback | now/next、队列时序控制（音乐→间隙文案→音乐） | Three.js |
 | Scheduler | 定时与日历钩子 | 阻塞音频 IO |
 | Persistence | 消息、播放史、计划 | 向 Client 暴露令牌 |
 
@@ -73,7 +86,7 @@
 |------|------|------|
 | App Shell | 路由、设置、场景加载 | 直连网易云 API |
 | Audio Graph | `<audio>`、Analyser、手势解锁 | 计算「下一首」业务语义 |
-| Visual | 粒子、GLSL、氛围感空间图像的光影 | 持有长期密钥 |
+| Visual | 粒子、GLSL、氛围感空间图像的光影；落地规格见 **§2.1**，参数收口 `client/src/visual.ts` → **`AURA_PARTICLES`** | 持有长期密钥 |
 | Transport | REST/WS、重连；**频谱可视化依赖同源音频代理（`/api/audio/proxy`），Client 应优先使用 `proxiedUrl`** | 服务端会话存储 |
 | UI 与布局（跨模块） | 播放器与设置采用隐喻式交互，控制区可在 hover 时再显露 | 禁止堆砌复杂的控件（如大量按钮、进度条轮廓）。播放器 UI 需采用隐喻式设计（如 hover 才显示控制区），确保氛围感空间图像始终是视觉主体。 |
 
@@ -117,7 +130,7 @@
 | `error` | S→C | `{ "message": "...", "traceId?" }` |
 | `offline_favorite_ready` | S→C | 离线收藏下载完成：`{ "schemaVersion": 1, "ncmSongId", "title", "artist", "status": "downloaded" }`；Client 可据此刷新 UI 或切至 `/api/local-audio/` |
 
-### 4.4 DJ 脚本 JSON（MiniMax → Server）
+### 4.4 DJ 脚本 JSON（Brain → Server）
 
 ```json
 {
@@ -125,10 +138,11 @@
   "say": "string",
   "play": [{ "ncmSongId": "string", "reason": "string" }],
   "moodTag": "calm|focus|uplift|nostalgic|...",
-  "segue": "string",
   "telemetry": { "confidence": 0.0 }
 }
 ```
+
+**说明**：`say` 为歌曲间隙前端显示的过渡文案，不再合成语音。`segue` 字段已移除，内容合并至 `say`。
 
 **moodTag 白名单（非法则降为 `neutral` 并记录）**：`neutral`、`calm`、`focus`、`uplift`、`nostalgic`。
 
@@ -143,7 +157,7 @@
 | P3 | NCM Adapter | 搜索、URL、detail、lyric；**生产级：NCM Enhanced 常驻**，见 [NCM_UPSTREAM.md](./NCM_UPSTREAM.md) | 真实代理 `NCM_MOCK=0`；联调可 Mock |
 | P4 | 品味与情绪 | moodTag + explain | 夹具稳定 |
 | P5 | Context Builder | `prompts/dj-persona.md`、六片段装配 | 可脱敏 dump |
-| P6 | MiniMax Adapter | 文本 + 语音管线 | 解析降级、重试 |
+| P6 | MiniMax Adapter | 文本生成管线 | 解析降级、重试 |
 | P7 | 队列时序 | 交错、淡入淡出 | `/api/now` 与播放误差在阈内 |
 | P8 | HTTP + WS | 契约实现 | 契约测试 |
 | P9 | Client Audio | 单 audio、Analyser | 稳定帧率读频谱 |
@@ -176,8 +190,8 @@
 
 | 工单 ID | 主题 | 阻塞项 | 建议负责 Agent |
 |---------|------|--------|----------------|
-| W1 | MiniMax TTS 延迟优化 | 当前 5–8s 唤醒延迟 | B 或新性能专项 |
-| W2 | 视觉体验升级 | 粒子大小/配色/视差背景；需 P10 频谱先稳定 | C 或新 UX 专项 |
+| W1 | 文案生成延迟优化 | Brain 调用耗时优化 | B 或新性能专项 |
+| W2 | 视觉体验升级（可选） | 全局 Bloom、丝带/流动矢量场等；**粒子 baseline 已在 `visual.ts` / §2.1** | C 或新 UX 专项 |
 | W3 | 部署与私有化 | Docker / HTTPS / 局域网方案；本机自用目标已达成，此条为可选 | 新 DevOps 专项 |
 
 **备注**：W1 可归入 B 待命期或单独开「性能优化」线；W2 需 C 本轮关闭后重启；W3 为可选增强。
@@ -188,7 +202,7 @@
 
 **架构命名**：遵循 Claudio 施工图 Layer 2（Claude Code 架构）——意图分流 → Context Builder → 大脑适配器。
 
-**实现层**：Executor 通过适配器调用 **MiniMax** 实际生成 DJ 话术，输出同样的 JSON 脚本（say/play/moodTag/segue）。
+**实现层**：Executor 通过适配器调用 **MiniMax** 实际生成 DJ 话术，输出同样的 JSON 脚本（say/play/moodTag）。
 
 **优势**：上层规范对齐施工图（子进程/prompt 组装/JSON 输出），底层模型可插拔（Claude/MiniMax/其他）。
 

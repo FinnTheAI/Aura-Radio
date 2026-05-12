@@ -4,6 +4,7 @@ import { log } from './logger.js';
 import type { DjScript, MoodTag } from './types.js';
 import { deriveSessionMood, normalizeMoodTag } from './taste-mood.js';
 import type { ContextFragments } from './context-builder.js';
+import { pickMockNcmSongId } from './mock-dj-pick.js';
 
 const DjScriptSchema = z.object({
   schemaVersion: z.number(),
@@ -47,7 +48,7 @@ interface MiniMaxChatCompletionJson {
 
 function mockScript(fragments: ContextFragments): DjScript {
   const session = deriveSessionMood();
-  const pick = session.moodTag === 'focus' ? '29764564' : '441491828';
+  const pick = pickMockNcmSongId(session.moodTag);
   return {
     schemaVersion: 1,
     say: session.moodTag === 'focus' ? '' : '离线 Mock：给你一首刚刚好的背景乐。',

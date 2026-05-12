@@ -428,7 +428,9 @@ async function callMiniMaxHttp(fragments: ContextFragments): Promise<string> {
     ],
     temperature: 0.7,
     top_p: 0.95,
-    max_completion_tokens: 2048,
+    // M2.7 为推理模型，内部推理强制开启且不可关闭，消耗 ~400 token；
+    // 长上下文 DJ prompt 需足够预算，否则 content 为空。
+    max_completion_tokens: 8192,
   };
 
   const headers: Record<string, string> = {

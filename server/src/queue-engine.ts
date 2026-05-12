@@ -6,6 +6,7 @@ import { log } from './logger.js';
 import { ncmSongDetail, ncmSongUrl } from './ncma.js';
 import type { DjScript, MoodTag, NowPlaying, QueueItem } from './types.js';
 import type { StreamHub } from './stream-hub.js';
+import { generateTtsAudio } from './tts.js';
 
 interface Active {
   item: QueueItem;
@@ -121,14 +122,35 @@ export class QueueEngine {
   }
 
   async enqueueFromScript(
-    script: DjScript, 
-    traceId: string, 
-    _options?: { skipLeadingVoice?: boolean; djAnnounce?: boolean | string }
+    script: DjScript,
+    traceId: string,
+    options?: { skipLeadingVoice?: boolean; djAnnounce?: boolean | string }
   ) {
     if (script.play.length === 0) return;
 
-    /** 裸播单首：跳过 voice lead / 全部预拉，先拿到 URL 即出播放器。 */
+    const skipLeadingVoice = options?.skipLeadingVoice ?? false;
     const [first, ...rest] = script.play;
+
+    // 生成 TTS 口播（若未跳过且有 say 文本）
+    if (!skipLeadingVoice && script.say?.trim()) {
+      try {
+        const sayText = `${script.say} ${script.segue ?? ''}`.trim();
+        const tts = await generateTtsAudio(sayText, { cacheKeySuffix: traceId });
+        this.pending.push({
+          kind: 'voice',
+          title: 'DJ 口播',
+          url: tts.url,
+          durationMs: tts.durationMs,
+          moodTag: script.moodTag,
+          traceId,
+          sayText: script.say,
+        });
+        log.info('TTS voice enqueued', { traceId, durMs: tts.durationMs });
+      } catch (e) {
+        log.warn('TTS voice generation failed, continuing without voice', { err: String(e) });
+      }
+    }
+
     const { url, durationMs } = await ncmSongUrl(first.ncmSongId);
 
     this.pending.push({

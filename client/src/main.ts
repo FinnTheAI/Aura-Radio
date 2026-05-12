@@ -28,6 +28,7 @@ const pipelineStatusEl = document.querySelector('#pipeline-status') as HTMLEleme
 const djAnnounceEl = document.querySelector('#dj-announce') as HTMLElement;
 const modeStatusEl = document.querySelector('#mode-status') as HTMLElement;
 const modeToggleBtn = document.querySelector('#mode-toggle') as HTMLButtonElement;
+const favoriteBtn = document.querySelector('#favorite-btn') as HTMLButtonElement;
 
 interface ChatDjScript {
   schemaVersion?: number;
@@ -67,6 +68,7 @@ let synthPhase = 0;
 let userAllowedPlayback = false;
 let lastReportedAudioError: number | null = null;
 let didSilentGesturePrime = false;
+let currentNcmSongId: string | undefined;
 
 const preloadEl = document.createElement('audio');
 preloadEl.id = 'preload-audio';
@@ -300,6 +302,16 @@ async function hydrateFromNow(np: NowPlaying) {
 
   audioEl.dataset.auraKind = np.type;
   if (np.traceId) audioEl.dataset.auraTrace = np.traceId;
+
+  // 收藏按钮：仅在播放 music 且有有效 ncmSongId 时显示
+  if (np.type === 'music' && np.ncmSongId && /^\d+$/.test(np.ncmSongId)) {
+    currentNcmSongId = np.ncmSongId;
+    favoriteBtn.hidden = false;
+    favoriteBtn.textContent = `收藏到离线（${np.title ?? np.ncmSongId}）`;
+  } else {
+    currentNcmSongId = undefined;
+    favoriteBtn.hidden = true;
+  }
 
   const absUrl = normalizeUrl(playRaw);
   const sameKey = key === lastPlayedKey;
@@ -564,6 +576,35 @@ chatSendBtn.addEventListener('click', async () => {
 
 chatInput.addEventListener('keydown', (ev) => {
   if (ev.key === 'Enter') chatSendBtn.click();
+});
+
+/* ========== 收藏到离线 ========== */
+
+favoriteBtn.addEventListener('click', async () => {
+  const id = currentNcmSongId;
+  if (!id) return;
+  favoriteBtn.disabled = true;
+  favoriteBtn.textContent = '收藏中…';
+  try {
+    const res = await fetch('/api/favorite', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ncmSongId: id }),
+    });
+    const data = (await res.json()) as { ok?: boolean; message?: string; status?: string };
+    if (res.ok && data.ok) {
+      metaEl.textContent += `\n${data.message ?? '已收藏'}`;
+      favoriteBtn.textContent = `已收藏（${data.status === 'downloaded' ? '可离线播放' : '下载中'})`;
+    } else {
+      metaEl.textContent += `\n收藏失败：${(data as { error?: string }).error ?? '未知错误'}`;
+      favoriteBtn.disabled = false;
+      favoriteBtn.textContent = '收藏到离线';
+    }
+  } catch (e) {
+    metaEl.textContent += `\n收藏失败：${String(e)}`;
+    favoriteBtn.disabled = false;
+    favoriteBtn.textContent = '收藏到离线';
+  }
 });
 
 /* ========== 播放模式切换 ========== */

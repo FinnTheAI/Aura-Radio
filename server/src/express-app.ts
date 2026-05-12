@@ -17,7 +17,7 @@ import { extractPlayKeyword, searchSongHitsForPlayIntent, type CliSongHit } from
 import { analyzeCloudTasteFromDb, writeCloudTasteMarkdown } from './taste-analyzer.js';
 import { neteaseCloudSyncEligible, syncNeteaseCloudToSqlite } from './netease-cloud-sync.js';
 import { registerOfflineFavoriteRoutes, cleanupOfflineFavoritesOrphans } from './favorites.js';
-import { buildSongCandidatesFromNCM, formatCandidatesForPrompt } from './song-candidates.js';
+import { buildSongCandidatesFromNCM, formatCandidatesForPrompt, resolvePlayFromDiscovery } from './song-candidates.js';
 import { getPlaybackMode, setPlaybackMode } from './playback-mode.js';
 import { buildOfflineFolderDjScript, registerLocalAudioFileRoute } from './offline-playback.js';
 
@@ -66,9 +66,8 @@ export function buildExpressApp(queue: QueueEngine, stream: StreamHub) {
           : newTraceId();
       const user = loadUserBundle();
       const skipCandidateBuild = process.env.AURA_SKIP_NCM_CANDIDATES === '1';
-      const songCandidatesPrompt = skipCandidateBuild
-        ? formatCandidatesForPrompt([])
-        : formatCandidatesForPrompt(await buildSongCandidatesFromNCM());
+      const candidates = skipCandidateBuild ? [] : await buildSongCandidatesFromNCM();
+      const songCandidatesPrompt = formatCandidatesForPrompt(candidates);
       const fragments = assembleContext({
         user,
         userText: text,
@@ -131,10 +130,15 @@ export function buildExpressApp(queue: QueueEngine, stream: StreamHub) {
         }
       }
 
-      const { script, normalized, usedFallback } = await generateDjScript(fragments);
+      const { script: rawScript, normalized, usedFallback } = await generateDjScript(fragments);
       if (usedFallback) {
         log.info('/api/chat used MiniMax HTTP instead of local Claude CLI', { traceId });
       }
+
+      // 通过 discoveryNote → NCM 搜索解析真实 ncmSongId（修复 "0" 占位）
+      const resolved = await resolvePlayFromDiscovery(rawScript.play, candidates);
+      const script = { ...rawScript, play: resolved };
+
       persistAssistantJson(JSON.stringify({ script, normalized, usedFallback }), traceId);
 
       const replaceQueue = Boolean(req.body?.replaceQueue);

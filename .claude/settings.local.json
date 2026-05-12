@@ -22,7 +22,14 @@
       "Bash(git init *)",
       "Bash(git add *)",
       "Bash(git commit *)",
-      "Bash(git config *)"
+      "Bash(git config *)",
+      "Bash(netstat -ano)",
+      "Bash(taskkill //PID 23328 //F)",
+      "Bash(taskkill //PID 9836 //F)",
+      "Bash(npx tsx *)",
+      "Bash(curl -s http://127.0.0.1:8080/health)",
+      "Bash(npx vite *)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://127.0.0.1:5173)"
     ]
   }
 }

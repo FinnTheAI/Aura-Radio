@@ -4,6 +4,7 @@ import { config, mergeNcmCookies } from './config.js';
 import { buildExpressApp } from './express-app.js';
 import { log } from './logger.js';
 import { QueueEngine } from './queue-engine.js';
+import { scheduleNextTrackDiscovery } from './next-track-segment.js';
 import { StreamHub } from './stream-hub.js';
 import { warmupClaudeCli } from './brain.js';
 
@@ -13,6 +14,7 @@ export async function bootstrap() {
   
   const streamHub = new StreamHub();
   const queue = new QueueEngine(streamHub);
+  queue.setOnQueueDrainedAfterMusic((meta) => scheduleNextTrackDiscovery(queue, meta));
   queue.start();
 
   const app = buildExpressApp(queue, streamHub);

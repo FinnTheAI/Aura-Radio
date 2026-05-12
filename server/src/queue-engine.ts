@@ -39,9 +39,16 @@ export class QueueEngine {
   private lastClientEndedAt = 0;
   private lastClientEndedTrace = '';
   private readonly stream: StreamHub;
+  /** 最后一首 music natural 播完且 pending 已空时回调（自动续播 discovery） */
+  private onQueueDrainedAfterMusic?: (meta: PlaybackDrainedMusicMeta) => void;
 
   constructor(stream: StreamHub) {
     this.stream = stream;
+  }
+
+  /** 由 bootstrap 注入，避免 queue-engine 直接依赖 next-track-segment */
+  setOnQueueDrainedAfterMusic(cb?: (meta: PlaybackDrainedMusicMeta) => void): void {
+    this.onQueueDrainedAfterMusic = cb;
   }
 
   start() {
@@ -73,6 +80,19 @@ export class QueueEngine {
     }
     this.active = null;
     this.popNext();
+
+    const drainedAfterMusic =
+      !this.active && prev?.item.kind === 'music' && Boolean(this.onQueueDrainedAfterMusic);
+    if (drainedAfterMusic && prev && this.onQueueDrainedAfterMusic) {
+      this.onQueueDrainedAfterMusic({
+        ncmSongId: prev.item.ncmSongId,
+        title: prev.item.title,
+        artist: prev.item.artist,
+        moodTag: prev.item.moodTag,
+        durationMs: prev.item.durationMs,
+        traceId: prev.traceId,
+      });
+    }
   }
 
   private popNext() {

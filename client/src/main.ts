@@ -796,14 +796,14 @@ syncChatSendGlow();
 audioEl.addEventListener('ended', () => {
   const traceId = audioEl.dataset.auraTrace;
   const kind = audioEl.dataset.auraKind;
-  if (!traceId || (kind !== 'music' && kind !== 'voice')) return;
+  if (kind !== 'music' && kind !== 'voice') return;
 
   void (async () => {
     try {
       const res = await fetch('/api/queue/advance', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ traceId }),
+        body: JSON.stringify(traceId ? { traceId } : {}),
       });
       if (res.ok) await pullNowAndPlay();
     } catch {

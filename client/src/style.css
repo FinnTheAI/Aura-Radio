@@ -54,6 +54,11 @@ body:focus-within #hud {
   font-size: 14px;
   padding: 0;
 }
+.hud-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  text-decoration: none;
+}
 #meta {
   max-width: 56ch;
   line-height: 1.55;
@@ -76,4 +81,32 @@ body:focus-within #hud {
 }
 #chat-input:focus {
   border-color: rgba(255, 255, 255, 0.4);
+}
+.pipeline-status {
+  max-width: 56ch;
+  font-size: 12px;
+  opacity: 0.7;
+}
+.mode-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.mode-status {
+  font-size: 12px;
+  opacity: 0.7;
+}
+.dj-announce {
+  max-width: 56ch;
+  font-size: 15px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  color: rgba(248, 250, 255, 0.9);
+}
+.dj-speaking {
+  max-width: 56ch;
+  font-size: 12px;
+  opacity: 0.7;
+  font-style: italic;
 }

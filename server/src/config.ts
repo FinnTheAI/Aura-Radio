@@ -92,4 +92,25 @@ export const config = {
    *（可选）本机点播抢答：**默认关闭**。产品以 MiniMax Brain 产出 `play[]` 为主；仅调试或遥控器场景设 `NETEASE_CLI_ENABLED=1`。
    */
   neteaseCliPlayEnabled: parseBool(process.env.NETEASE_CLI_ENABLED, false),
+
+  // Brain 配置
+  /**
+   * 显式启用 Brain 占位脚本（与真实 Claude/MiniMax 解耦）。
+   * **未启用**时，两级调用均失败将 **不再静默 Mock**，HTTP 返回 503（见 `BrainUnavailableError`）。
+   */
+  brainMock: parseBool(process.env.BRAIN_MOCK, false),
+  brainForceHttp: parseBool(process.env.BRAIN_FORCE_HTTP, false),
+
+  // TTS 配置
+  minimaxTtsEnabled: parseBool(process.env.MINIMAX_TTS_ENABLED, true),
+  minimaxTtsVoiceId: process.env.MINIMAX_TTS_VOICE_ID ?? 'male-qn-qingse',
+  minimaxTtsBgmEnabled: parseBool(process.env.MINIMAX_TTS_BGM_ENABLED, true),
+  minimaxTtsBgmUrl: process.env.MINIMAX_TTS_BGM_URL || 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3',
+
+  // mmx-cli gate 配置
+  mmxCliGateJsPath: process.env.MMX_CLI_GATE_JS_PATH ?? './tools/mmx-cli-gate.js',
+  mmxMaxSearchPerInvocation: Number(process.env.MMX_MAX_SEARCH_PER_INVOCATION ?? 3),
+
+  // 下一首发现冷却时间
+  nextTrackDiscoveryCooldownMs: Number(process.env.NEXT_TRACK_DISCOVERY_COOLDOWN_MS ?? 30_000),
 };

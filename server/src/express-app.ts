@@ -5,7 +5,7 @@ import type { QueueEngine } from './queue-engine.js';
 import { newTraceId } from './queue-engine.js';
 import { loadUserBundle } from './user-data.js';
 import { assembleContext, persistUserTurn, persistAssistantJson, redactForDump } from './context-builder.js';
-import { generateDjScript } from './brain.js';
+import { generateDjScript, BrainUnavailableError } from './brain.js';
 import { buildPlanToday } from './scheduler.js';
 import { handleAudioProxyGet } from './audio-proxy.js';
 import { config } from './config.js';
@@ -16,6 +16,10 @@ import type { DjScript } from './types.js';
 import { extractPlayKeyword, searchSongHitsForPlayIntent, type CliSongHit } from './netease-cli-adapter.js';
 import { analyzeCloudTasteFromDb, writeCloudTasteMarkdown } from './taste-analyzer.js';
 import { neteaseCloudSyncEligible, syncNeteaseCloudToSqlite } from './netease-cloud-sync.js';
+import { registerOfflineFavoriteRoutes, cleanupOfflineFavoritesOrphans } from './favorites.js';
+import { buildSongCandidatesFromNCM, formatCandidatesForPrompt } from './song-candidates.js';
+import { getPlaybackMode, setPlaybackMode } from './playback-mode.js';
+import { buildOfflineFolderDjScript, registerLocalAudioFileRoute } from './offline-playback.js';
 
 function djScriptFromCliHit(hit: CliSongHit, keyword: string): DjScript {
   return {
@@ -41,6 +45,12 @@ export function buildExpressApp(queue: QueueEngine, stream: StreamHub) {
   );
   app.use(express.json({ limit: '512kb' }));
 
+  registerOfflineFavoriteRoutes(app, stream);
+  registerLocalAudioFileRoute(app);
+
+  /* 启动时清理：DB 标记已下载、但文件缺失的离线收藏行 */
+  try { cleanupOfflineFavoritesOrphans(); } catch { /* */ }
+
   app.get('/health', (_req, res) => {
     res.json({ ok: true });
   });
@@ -55,12 +65,17 @@ export function buildExpressApp(queue: QueueEngine, stream: StreamHub) {
           ? req.body.sessionId.trim()
           : newTraceId();
       const user = loadUserBundle();
+      const skipCandidateBuild = process.env.AURA_SKIP_NCM_CANDIDATES === '1';
+      const songCandidatesPrompt = skipCandidateBuild
+        ? formatCandidatesForPrompt([])
+        : formatCandidatesForPrompt(await buildSongCandidatesFromNCM());
       const fragments = assembleContext({
         user,
         userText: text,
         now: new Date(),
         timezone: typeof req.headers['x-timezone'] === 'string' ? req.headers['x-timezone'] : undefined,
         nowPlaying: queue.getNow(),
+        songCandidatesPrompt,
       });
 
       persistUserTurn(text, traceId);
@@ -118,10 +133,7 @@ export function buildExpressApp(queue: QueueEngine, stream: StreamHub) {
 
       const { script, normalized, usedFallback } = await generateDjScript(fragments);
       if (usedFallback) {
-        log.warn('/api/chat brain degraded to mock', {
-          traceId,
-          meta: { brain: 'mock_fallback', minimaxMock: config.minimaxMock },
-        });
+        log.info('/api/chat used MiniMax HTTP instead of local Claude CLI', { traceId });
       }
       persistAssistantJson(JSON.stringify({ script, normalized, usedFallback }), traceId);
 
@@ -138,6 +150,20 @@ export function buildExpressApp(queue: QueueEngine, stream: StreamHub) {
         traceId,
       });
     } catch (e) {
+      if (e instanceof BrainUnavailableError) {
+        const tid =
+          (typeof req.body?.sessionId === 'string' && req.body.sessionId.trim()
+            ? req.body.sessionId.trim()
+            : undefined) ?? newTraceId();
+        stream.broadcast({ type: 'error', message: e.message, traceId: tid });
+        res.status(503).json({
+          error: e.message,
+          code: e.code,
+          hint: '仅当显式设置 BRAIN_MOCK=1 时使用占位 DJ 脚本（开发与离线验收）。',
+          traceId: tid,
+        });
+        return;
+      }
       const traceId = newTraceId();
       stream.broadcast({ type: 'error', message: String(e), traceId });
       res.status(500).json({ error: String(e), traceId });
@@ -262,6 +288,19 @@ export function buildExpressApp(queue: QueueEngine, stream: StreamHub) {
   app.get('/api/plan/today', (req, res) => {
     const tz = typeof req.headers['x-timezone'] === 'string' ? req.headers['x-timezone'] : undefined;
     res.json(buildPlanToday(new Date(), tz));
+  });
+
+  app.get('/api/playback-mode', (_req, res) => {
+    res.json({ mode: getPlaybackMode() });
+  });
+
+  app.post('/api/playback-mode', (req, res) => {
+    const raw = req.body?.mode;
+    const confirm = Boolean(req.body?.confirm);
+    if (!confirm) return res.status(400).json({ error: '需二次确认（body.confirm: true）' });
+    if (raw !== 'online' && raw !== 'offline') return res.status(400).json({ error: '非法 mode，仅 online / offline' });
+    setPlaybackMode(raw);
+    res.json({ mode: raw });
   });
 
   app.post('/api/queue/skip', (_req, res) => {

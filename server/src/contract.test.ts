@@ -45,6 +45,15 @@ describe('HTTP contract (ARCH_DOC / CONTRACT.yaml)', () => {
     expect(Array.isArray(res.body.cloud.artistsTop10)).toBe(true);
   });
 
+  it('GET /api/favorites/status', async () => {
+    const res = await request(app).get('/api/favorites/status').expect(200);
+    expect(typeof res.body.total).toBe('number');
+    expect(typeof res.body.downloaded).toBe('number');
+    expect(typeof res.body.pending).toBe('number');
+    expect(typeof res.body.failed).toBe('number');
+    expect(res.body.progressPercent === null || typeof res.body.progressPercent === 'number').toBe(true);
+  });
+
   it('POST /api/chat → traceId + djScript', async () => {
     const res = await request(app).post('/api/chat').send({ text: 'hello contract' }).expect(200);
 

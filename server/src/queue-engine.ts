@@ -13,6 +13,16 @@ interface Active {
   traceId?: string;
 }
 
+/** 上一首音乐播放完成时的元数据 */
+export interface PlaybackDrainedMusicMeta {
+  ncmSongId?: string;
+  title?: string;
+  artist?: string;
+  moodTag: MoodTag;
+  durationMs: number;
+  traceId?: string;
+}
+
 export class QueueEngine {
   private pending: QueueItem[] = [];
   private active: Active | null = null;
@@ -110,7 +120,11 @@ export class QueueEngine {
     return { ok: hadSomething, newHead: raw ? applyProxiedPlaybackUrl(raw) : null };
   }
 
-  async enqueueFromScript(script: DjScript, traceId: string) {
+  async enqueueFromScript(
+    script: DjScript, 
+    traceId: string, 
+    _options?: { skipLeadingVoice?: boolean; djAnnounce?: boolean | string }
+  ) {
     if (script.play.length === 0) return;
 
     /** 裸播单首：跳过 voice lead / 全部预拉，先拿到 URL 即出播放器。 */

@@ -88,6 +88,64 @@ paths:
               schema:
                 $ref: '#/components/schemas/NextQueue'
 
+  /api/favorites/status:
+    get:
+      summary: 离线收藏池聚合状态（SQLite offline_favorites）
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OfflineFavoritesStatus'
+
+  /api/favorite:
+    post:
+      summary: 加入离线收藏并后台下载 mp3（依赖 NCM 可用或后续 yt-dlp 兜底）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ncmSongId]
+              properties:
+                ncmSongId:
+                  type: string
+                  description: 纯数字网易云单曲 id
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FavoriteUpsertResponse'
+        '400':
+          description: 非法或缺失 ncmSongId
+
+  /api/local-audio/{songId}:
+    get:
+      summary: 已下载离线收藏的本地 mp3（同源直出；文件名可为 `id.mp3` 或 «标题 - 歌手».mp3）
+      parameters:
+        - name: songId
+          in: path
+          required: true
+          schema:
+            type: string
+            description: 数字单曲 id；可带或非带 `.mp3` 后缀
+      responses:
+        '200':
+          description: audio/mpeg
+          content:
+            audio/mpeg:
+              schema:
+                type: string
+                format: binary
+        '400':
+          description: songId 非法
+        '404':
+          description: 文件不存在或未下载
+
   /api/taste:
     get:
       summary: 品味与情绪规则摘要
@@ -189,6 +247,28 @@ x-websocket:
                   type: string
                 traceId:
                   type: string
+        - type: offline_favorite_ready
+          description: 离线收藏下载完成并可经 `/api/local-audio/` 回放
+          payload:
+            schema:
+              type: object
+              required: [schemaVersion, type, ncmSongId, title, artist, status]
+              properties:
+                type:
+                  type: string
+                  const: offline_favorite_ready
+                schemaVersion:
+                  type: integer
+                  const: 1
+                ncmSongId:
+                  type: string
+                title:
+                  type: string
+                artist:
+                  type: string
+                status:
+                  type: string
+                  const: downloaded
 
 components:
   schemas:
@@ -316,6 +396,39 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/QueueItem'
+
+    OfflineFavoritesStatus:
+      type: object
+      required: [total, downloaded, pending, failed, progressPercent]
+      properties:
+        total:
+          type: integer
+        downloaded:
+          type: integer
+        pending:
+          type: integer
+        failed:
+          type: integer
+        progressPercent:
+          type: integer
+          nullable: true
+          description: 基于 downloaded/total；无行时为 null
+
+    FavoriteUpsertResponse:
+      type: object
+      required: [ok, ncmSongId, queuedDownload, status, message]
+      properties:
+        ok:
+          type: boolean
+        ncmSongId:
+          type: string
+        queuedDownload:
+          type: boolean
+        status:
+          type: string
+          enum: [pending, downloaded, failed]
+        message:
+          type: string
 
     TasteResponse:
       type: object

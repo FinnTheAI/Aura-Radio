@@ -1,4 +1,4 @@
 import './config.js';
 import { bootstrap } from './bootstrap.js';
 
-bootstrap();
+void bootstrap();

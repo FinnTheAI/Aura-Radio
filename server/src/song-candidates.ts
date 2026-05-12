@@ -6,6 +6,7 @@ import { kvGet, kvSet } from './db.js';
 import { OFFLINE_DISCOVERY_PREFIX } from './favorites.js';
 import { LOCAL_FS_PREFIX } from './offline-playback.js';
 import { analyzeCloudTasteFromDb } from './taste-analyzer.js';
+import { deriveSessionMood } from './taste-mood.js';
 import { ncmArtistHotSongMetas, ncmSearch, ncmSearchArtistFirstId, ncmArtistDetail } from './ncma.js';
 import { log } from './logger.js';
 
@@ -26,6 +27,19 @@ export interface SongCandidate {
   artistDescription?: string;
 }
 
+/**
+ * 供 B 侧 mmx-cli gate **并行 search** 的结构化行（与 `SongCandidate` 一一对应）。
+ * `mmxSearchQueries`：短检索词数组，覆盖 **艺人 + 风格/氛围 + 时段/收听场景**，可映射为多路 `mmx-cli search query "…"`.
+ */
+export interface MmxGateCandidateRow {
+  ncmSongId: string;
+  title: string;
+  artists: string[];
+  blurb: string;
+  /** 多条可并行发起的检索词（建议每条 ≤ 80 字） */
+  mmxSearchQueries: string[];
+}
+
 interface CacheEnvelope {
   cachedAtMs: number;
   items: SongCandidate[];
@@ -36,6 +50,52 @@ function uniqPush(bucket: SongCandidate[], seen: Set<string>, cand: SongCandidat
   if (seen.has(cand.ncmSongId)) return;
   seen.add(cand.ncmSongId);
   bucket.push(cand);
+}
+
+function hourSlotLabelCN(now: Date): string {
+  const h = now.getHours();
+  if (h >= 5 && h < 9) return '清晨';
+  if (h >= 9 && h < 12) return '上午';
+  if (h >= 12 && h < 14) return '午间';
+  if (h >= 14 && h < 18) return '下午';
+  if (h >= 18 && h < 22) return '晚间';
+  return '深夜';
+}
+
+function firstStyleToken(genre?: string): string {
+  if (!genre?.trim()) return '';
+  const t = genre.split(/[，,、；;\n]/)[0]?.trim() ?? '';
+  return t.slice(0, 40);
+}
+
+/**
+ * 构造与 mmx-cli / 网易云搜索对齐的多条关键词：**艺人 + 风格 + 时段收听场景**。
+ * B 侧可对每条发起并行 `mmx-cli search query "…"`，再与 `ncmSongId` 交叉验证。
+ */
+export function buildMmxSearchQueriesForCandidate(c: SongCandidate, now = new Date()): string[] {
+  const primaryArtist = (c.artists[0] ?? '').trim() || '独立音乐';
+  const style = firstStyleToken(c.artistGenre) || '氛围感';
+  const slot = hourSlotLabelCN(now);
+  const session = deriveSessionMood(now);
+  const title = (c.title ?? '').trim();
+  const mood = session.moodTag;
+  const qs = new Set<string>();
+  qs.add(`${primaryArtist} ${style} 冷门 推荐`.replace(/\s+/g, ' ').trim());
+  if (title) qs.add(`${primaryArtist} ${title}`.slice(0, 96));
+  qs.add(`${slot}听 ${primaryArtist} ${mood}`.replace(/\s+/g, ' ').trim());
+  qs.add(`${primaryArtist} 相似风格 华语`.replace(/\s+/g, ' ').trim());
+  qs.add(`${session.explain.slice(0, 64)} ${primaryArtist}`.replace(/\s+/g, ' ').trim());
+  return [...qs].filter(Boolean).slice(0, 5);
+}
+
+export function buildMmxGateCandidateRows(items: SongCandidate[], now = new Date()): MmxGateCandidateRow[] {
+  return items.map((c) => ({
+    ncmSongId: c.ncmSongId,
+    title: c.title,
+    artists: c.artists,
+    blurb: c.blurb,
+    mmxSearchQueries: buildMmxSearchQueriesForCandidate(c, now),
+  }));
 }
 
 async function rebuildCandidatesFresh(): Promise<SongCandidate[]> {
@@ -58,23 +118,23 @@ async function rebuildCandidatesFresh(): Promise<SongCandidate[]> {
     if (bucket.length >= TOTAL_CAP) break;
     let gotHot = 0;
     try {
-      const ar = await ncmSearchArtistFirstId(nm);
-      if (ar?.id) {
-        const hot = await ncmArtistHotSongMetas(ar.id, HOT_PER_ARTIST);
+      const arId = await ncmSearchArtistFirstId(nm);
+      if (arId) {
+        const hot = await ncmArtistHotSongMetas(arId, HOT_PER_ARTIST);
         for (const h of hot) {
           let artistGenre: string | undefined;
           let artistDesc: string | undefined;
           try {
-            const ad = await ncmArtistDetail(ar.id);
-            artistGenre = ad.genre.slice(0, 3).join('/');
-            artistDesc = ad.description.slice(0, 300);
+            const ad = await ncmArtistDetail(arId);
+            artistGenre = ad?.briefDesc?.slice(0, 100);
+            artistDesc = ad?.briefDesc?.slice(0, 300);
           } catch { /** */ }
           uniqPush(bucket, seen, {
             ncmSongId: h.id,
             title: h.name,
-            artists: h.artists.length ? h.artists : [ar.name],
+            artists: h.artists.length ? h.artists : [nm],
             album: h.album,
-            blurb: `艺人「${ar.name}」热门（Artist TopSong）。`,
+            blurb: `艺人「${nm}」热门（Artist TopSong）。`,
             artistGenre,
             artistDescription: artistDesc,
           });
@@ -126,6 +186,10 @@ export function formatCandidatesForPrompt(items: SongCandidate[]): string {
         '',
         '**仍须输出 1 条 `play`**：`ncmSongId` 可写 `"0"`；**`discoveryNote` 必填**，内容为可交给网易云搜索的中英文关键词（服务端单次只解析一条；下一轮在用户播完后触发）。',
         '**禁止**输出空数组 `play: []`（除非用户明确要求不播歌）。',
+        '',
+        '## `# mmxGateCandidateHints`（结构化 JSON；候选为空时供 B 仅依赖会话画像构造并行 search）',
+        '',
+        JSON.stringify({ schemaVersion: 1, document: 'mmxGateCandidateHints-v1', candidates: [] }, null, 2),
       ].join('\n')
     );
   }
@@ -140,11 +204,25 @@ export function formatCandidatesForPrompt(items: SongCandidate[]): string {
     artistDescription: c.artistDescription ?? null,
   }));
 
+  const mmxPack = {
+    schemaVersion: 1,
+    document: 'mmxGateCandidateHints-v1',
+    generatedAt: new Date().toISOString(),
+    /** 与上方兜底行按 ncmSongId 一一对应；mmxSearchQueries 供 B 并行检索 */
+    candidates: buildMmxGateCandidateRows(items, new Date()),
+  };
+
   const lines = [
     ...head,
     '兜底候选（每行 JSON）：',
     '',
     payload.map((row) => JSON.stringify(row)).join('\n'),
+    '',
+    '## `# mmxGateCandidateHints`（结构化 JSON，供 B **并行** mmx-cli search；与上行 **ncmSongId** 对齐）',
+    '',
+    '每条 `mmxSearchQueries` 为独立短检索词：**艺人名 + 风格/氛围 token + 当前时段收听场景**；可拆成多路 `search query` 并发。',
+    '',
+    JSON.stringify(mmxPack, null, 2),
   ];
   return lines.join('\n');
 }

@@ -1,6 +1,6 @@
 import { config, mergeNcmCookies } from './config.js';
 import { log } from './logger.js';
-import { getNcmSongUrl as ytdlpGetUrl, mockNcmPlayableFallback } from './ytdlp.js';
+import { getNcmSongUrl as ytdlpGetUrl, mockNcmPlayableFallback, getNcmSongMetaFromYtDlp } from './ytdlp.js';
 
 export interface NcmSongMeta {
   id: string;
@@ -165,7 +165,7 @@ export async function ncmSongUrl(ncmSongId: string): Promise<{ url: string; dura
 
 export async function ncmSongDetail(ncmSongId: string): Promise<NcmSongMeta> {
   if (config.ncmMock || !config.ncmApiBaseUrl) {
-    return { id: ncmSongId, name: `Mock Track ${ncmSongId}`, artists: ['Mock'] };
+    return { id: ncmSongId, name: '', artists: [] };
   }
   try {
     const body = (await fetchJson<{ songs?: Array<{ id: number; name: string; ar?: Array<{ name: string }> }> }>(
@@ -176,8 +176,17 @@ export async function ncmSongDetail(ncmSongId: string): Promise<NcmSongMeta> {
     if (!s) throw new Error('no song');
     return { id: String(s.id), name: s.name, artists: (s.ar ?? []).map((a) => a.name) };
   } catch (e) {
-    log.warn('[NCM] ncmSongDetail failed, mock', { ncmSongId, err: e instanceof Error ? e.message : e });
-    return { id: ncmSongId, name: `Mock Track ${ncmSongId}`, artists: ['Mock'] };
+    log.warn('[NCM] ncmSongDetail failed, trying yt-dlp metadata', { ncmSongId, err: e instanceof Error ? e.message : e });
+    try {
+      const ytMeta = await getNcmSongMetaFromYtDlp(ncmSongId);
+      if (ytMeta?.title) {
+        log.info('[NCM] yt-dlp metadata fallback success', { ncmSongId, title: ytMeta.title });
+        return { id: ncmSongId, name: ytMeta.title, artists: [ytMeta.artist] };
+      }
+    } catch {
+      /** ignore yt-dlp meta failure */
+    }
+    return { id: ncmSongId, name: '', artists: [] };
   }
 }
 
@@ -492,4 +501,32 @@ export async function ncmFetchRecentSongList(limit = 200): Promise<NcmRecentPlay
   }
 
   return [];
+}
+
+// ==================== 以下函数为兼容性存根，后续实现 ====================
+
+export interface NcmArtistHotSongMeta {
+  id: string;
+  name: string;
+  artists: string[];
+  album?: string;
+  popularity?: number;
+}
+
+/** 获取艺人热门歌曲 */
+export async function ncmArtistHotSongMetas(_artistId: string, _limit?: number): Promise<NcmArtistHotSongMeta[]> {
+  // 待实现：调用 /artist/top/song 接口
+  return [];
+}
+
+/** 搜索艺人并返回首个匹配ID */
+export async function ncmSearchArtistFirstId(_artistName: string): Promise<string | null> {
+  // 待实现：调用 /search 接口 type=100 (艺人)
+  return null;
+}
+
+/** 获取艺人详情 */
+export async function ncmArtistDetail(_artistId: string): Promise<{ id: string; name: string; picUrl?: string; briefDesc?: string } | null> {
+  // 待实现：调用 /artist/detail 接口
+  return null;
 }

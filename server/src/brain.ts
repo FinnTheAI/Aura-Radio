@@ -7,6 +7,112 @@ import type { ContextFragments } from './context-builder.js';
 import { config } from './config.js';
 import { logBrainClaudeSession } from './db.js';
 
+/**
+ * Brain 在 **未** 设置 `BRAIN_MOCK=1` 时，不会在 Claude/MiniMax 失败后静默换用占位脚本；
+ * 抛出本错误，由 HTTP 层返回 503。
+ */
+export class BrainUnavailableError extends Error {
+  readonly code = 'BRAIN_UNAVAILABLE' as const;
+  constructor(
+    message: string,
+    public readonly lastError?: unknown,
+  ) {
+    super(message);
+    this.name = 'BrainUnavailableError';
+  }
+}
+
+// ==================== 缓存机制 ====================
+interface CacheEntry {
+  script: DjScript;
+  normalized: MoodTag;
+  coercedTag: boolean;
+  timestamp: number;
+}
+
+// 简单的内存缓存（基于 taste-cloud.md hash + 时段）
+const recommendationCache = new Map<string, CacheEntry>();
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5分钟缓存
+const MAX_CACHE_SIZE = 50; // 最大缓存条目
+
+/** 生成缓存键：基于用户画像hash + 时段 + mood */
+function generateCacheKey(fragments: ContextFragments): string {
+  // 提取 taste-cloud.md 的关键特征（前200字符）作为用户画像指纹
+  const tasteFingerprint = fragments.userCorpus.slice(0, 200).replace(/\s+/g, '');
+  const hour = new Date().getHours();
+  const mood = deriveSessionMood().moodTag;
+  return `${tasteFingerprint.slice(0, 50)}_${hour}_${mood}`;
+}
+
+/** 清理过期缓存 */
+function cleanupCache(): void {
+  const now = Date.now();
+  for (const [key, entry] of recommendationCache.entries()) {
+    if (now - entry.timestamp > CACHE_TTL_MS) {
+      recommendationCache.delete(key);
+    }
+  }
+  // LRU：如果缓存过大，删除最旧的
+  if (recommendationCache.size > MAX_CACHE_SIZE) {
+    const sorted = [...recommendationCache.entries()].sort((a, b) => a[1].timestamp - b[1].timestamp);
+    const toDelete = sorted.slice(0, sorted.length - MAX_CACHE_SIZE);
+    for (const [key] of toDelete) {
+      recommendationCache.delete(key);
+    }
+  }
+}
+
+// ==================== Claude CLI 预热 ====================
+let claudeCliReady = false;
+
+/** 预热 Claude CLI：启动时执行一次简单调用，减少首次用户请求的延迟 */
+export async function warmupClaudeCli(): Promise<void> {
+  if (!config.brainMock && !config.brainForceHttp) {
+    log.info('Warming up Claude CLI...');
+    const start = Date.now();
+    try {
+      // 执行一次简单预热调用
+      const result = await spawnClaudeForWarmup();
+      claudeCliReady = true;
+      log.info('Claude CLI warmup successful', { durationMs: Date.now() - start });
+    } catch (e) {
+      log.warn('Claude CLI warmup failed (will retry on first request)', { err: e });
+      // 预热失败不阻塞启动，首次请求时会重试
+    }
+  }
+}
+
+/** 预热专用：执行简单 prompt */
+async function spawnClaudeForWarmup(): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      'claude',
+      ['--print', '--input-format', 'text', '--permission-mode', 'bypassPermissions'],
+      { stdio: ['pipe', 'pipe', 'pipe'], timeout: 30000 }
+    );
+
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout.on('data', (data: Buffer) => { stdout += data.toString('utf-8'); });
+    child.stderr.on('data', (data: Buffer) => { stderr += data.toString('utf-8'); });
+
+    child.on('error', (err) => reject(err));
+    child.on('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(`Warmup exit ${code}: ${stderr}`));
+      } else {
+        resolve(stdout);
+      }
+    });
+
+    // 发送简单预热 prompt
+    child.stdin.write('Say "ready" in 1 word.', () => {
+      child.stdin.end();
+    });
+  });
+}
+
 /** 避免 `z.coerce.string()` 把缺失字段变成字面量 "undefined" / "null" */
 function cleanDjText(v: unknown, fallback = ''): string {
   if (v === undefined || v === null) return fallback;
@@ -298,7 +404,9 @@ async function callLocalClaude(fragments: ContextFragments): Promise<string> {
 
 /** 备用：HTTP 调用 MiniMax（仅当本地 Claude/mm 编排不可用；**不**使用 Brave/MCP，亦非 mmx-cli 的替代搜索通道）。 */
 async function callMiniMaxHttp(fragments: ContextFragments): Promise<string> {
-  const endpoint = config.minimaxApiUrl || 'https://api.minimax.chat/v1/text/chatcompletion_v2';
+  const endpoint = config.minimaxApiUrl
+    ? `${config.minimaxApiUrl}/text/chatcompletion_v2`
+    : 'https://api.minimax.chat/v1/text/chatcompletion_v2';
 
   const userContent = [
     '以下为完整上下文分片，请严格输出 JSON（无 Markdown、无代码围栏）。',
@@ -354,8 +462,11 @@ async function callMiniMaxHttp(fragments: ContextFragments): Promise<string> {
   return content;
 }
 
-/** Brain Adapter：优先本地 Claude，失败则 MiniMax HTTP，再失败则 Mock */
-export async function generateDjScript(fragments: ContextFragments): Promise<{
+/** Brain Adapter：优先本地 Claude，失败则 MiniMax HTTP。失败时 **不** 自动 Mock；仅 `BRAIN_MOCK=1` 可走占位脚本。 */
+export async function generateDjScript(
+  fragments: ContextFragments,
+  options?: { mmxInvocationId?: string }
+): Promise<{
   script: DjScript;
   normalized: MoodTag;
   coercedTag: boolean;
@@ -367,6 +478,21 @@ export async function generateDjScript(fragments: ContextFragments): Promise<{
     const script = mockScript(fragments);
     const { moodTag, coerced } = normalizeMoodTag(script.moodTag);
     return { script: { ...script, moodTag }, normalized: moodTag, coercedTag: coerced, usedFallback: false };
+  }
+
+  // ==================== 缓存检查 ====================
+  cleanupCache();
+  const cacheKey = generateCacheKey(fragments) + (options?.mmxInvocationId ? `_${options.mmxInvocationId.slice(0, 8)}` : '');
+  const cached = recommendationCache.get(cacheKey);
+  
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+    log.info('Using cached recommendation', { cacheKey: cacheKey.slice(0, 20) + '...' });
+    return {
+      script: cached.script,
+      normalized: cached.normalized,
+      coercedTag: cached.coercedTag,
+      usedFallback: false,
+    };
   }
 
   let raw: string | undefined;
@@ -415,6 +541,17 @@ export async function generateDjScript(fragments: ContextFragments): Promise<{
         script = { ...script, say: '' };
       }
 
+      // ==================== 缓存成功的结果 ====================
+      if (!config.brainMock) {
+        recommendationCache.set(cacheKey, {
+          script,
+          normalized: moodTag,
+          coercedTag: coerced,
+          timestamp: Date.now(),
+        });
+        log.debug('Recommendation cached', { cacheKey: cacheKey.slice(0, 20) + '...', cacheSize: recommendationCache.size });
+      }
+
       return { 
         script, 
         normalized: moodTag, 
@@ -428,9 +565,18 @@ export async function generateDjScript(fragments: ContextFragments): Promise<{
     }
   }
 
-  // 最终降级：Mock
-  log.warn('brain exhausted, using mockScript fallback', { err: lastErr });
-  const script = mockScript(fragments);
-  const { moodTag, coerced } = normalizeMoodTag(script.moodTag);
-  return { script: { ...script, moodTag }, normalized: moodTag, coercedTag: coerced, usedFallback: true };
+  const detail = lastErr instanceof Error ? lastErr.message : lastErr != null ? String(lastErr) : '';
+  const noMinimax = !config.minimaxApiKey.trim();
+  log.error('brain unavailable (automatic mock disabled)', { err: lastErr, noMinimax });
+  throw new BrainUnavailableError(
+    [
+      'Brain 不可用：本地 Claude 未返回可解析结果，且 MiniMax HTTP 失败或不可用。',
+      noMinimax ? '未配置 MINIMAX_API_KEY，无法走 HTTP 降级。' : '',
+      detail ? `详情：${detail.slice(0, 400)}` : '',
+      '若仅需占位开发/测试，请显式设置环境变量 BRAIN_MOCK=1。',
+    ]
+      .filter(Boolean)
+      .join(' '),
+    lastErr,
+  );
 }

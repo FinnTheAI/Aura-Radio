@@ -6,7 +6,15 @@ export type StreamMessage =
   | { type: 'pong'; schemaVersion: 1; ts: string }
   | { type: 'now_playing'; payload: NowPlaying }
   | { type: 'queue'; items: QueueItem[] }
-  | { type: 'error'; message: string; traceId?: string };
+  | { type: 'error'; message: string; traceId?: string }
+  | {
+      type: 'offline_favorite_ready';
+      schemaVersion: 1;
+      ncmSongId: string;
+      title?: string;
+      artist?: string;
+      status: 'downloaded';
+    };
 
 export class StreamHub {
   private clients = new Set<WebSocket>();

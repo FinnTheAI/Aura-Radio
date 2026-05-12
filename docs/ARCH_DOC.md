@@ -15,7 +15,7 @@
 | 施工图要素 | Aura Radio 对应 |
 |------------|----------------|
 | BRAIN（Claude Code 架构） | **Claude Code 分层架构**：意图分流 → Context Builder → 大脑适配器（Executor 通过适配器调用 **MiniMax** 等底层模型）；输出 JSON 结构化脚本 |
-| MUSIC（网易云 API） | **NeteaseCloudMusicApi**：搜索、playable URL、歌词、推荐等 |
+| MUSIC（网易云 API） | **[NeteaseCloudMusicApi Enhanced](https://github.com/neteasecloudmusicapienhanced/api-enhanced)**（或兼容的 NeteaseCloudMusicApi 系 HTTP 代理）；**长期要求代理进程常驻**，运维与选型见 **[NCM_UPSTREAM.md](./NCM_UPSTREAM.md)** |
 | VOICE / 播报 | MiniMax 生成 DJ 脚本（say 字段）+ 客户端 TTS（或后续接入其他语音合成） |
 | 前端 PWA + 流媒体 | **Client**：宿主页 + `<audio>` 播放队列 + **Three.js / GLSL** 频谱驱动的粒子场景 |
 | 本地状态与记忆 | **Server**：**SQLite** 持久化（`STATE_DB_PATH` 或 `$DATA_DIR/state.db`），可迁移 Postgres；与用户品味、播放史、调度痕迹 |
@@ -60,7 +60,7 @@
 |------|------|------|
 | Router | HTTP/WS 分发、简易指令 | WebGL / UI |
 | Taste & Mood | 文件解析、NCM 聚合、情绪标签 | 替代模型写全长独白 |
-| NCM Adapter | 上游 HTTP（`NCM_API_BASE_URL` 或 `NCM_ALLOW_LOCAL_DEFAULT`）为 MiniMax 输出的 `ncmSongId` 取元数据/外链；可降级 yt-dlp；`NETEASE_CLI_ENABLED` 本机抢答 **默认关**（Brain 优先） | 默认持久化全量原始响应 |
+| NCM Adapter | 上游 HTTP（**`NCM_API_BASE_URL`**，推荐本机/内网 **Enhanced 常开**；见 **[NCM_UPSTREAM.md](./NCM_UPSTREAM.md)**）为 Brain 输出的 `ncmSongId` 取元数据/外链；**仅**在未配置或运维允许时降级 yt-dlp；`NETEASE_CLI_ENABLED` 本机抢答 **默认关**（Brain 优先） | 默认持久化全量原始响应 |
 | Context Builder | 多片段 prompt 装配 | 日志泄露密钥 |
 | MiniMax Adapter | 调用、解析 JSON、重试熔断 | 耦合前端路由 |
 | Queue & Playback | now/next、播报/歌曲交错 | Three.js |
@@ -94,6 +94,9 @@
 | GET | `/api/taste` | 品味摘要 | `?sections=...` | `{ taste, moodRules, updatedAt }` |
 | GET | `/api/plan/today` | 当日计划 | 时区头可选 | `{ blocks[] }` |
 | POST | `/api/queue/skip` | 跳过（可选） | `{ reason? }` | `{ ok, newHead }` |
+| POST | `/api/favorite` | 离线收藏并入队下载 | `{ ncmSongId }` | `{ ok, ncmSongId, queuedDownload, status, message }` |
+| GET | `/api/favorites/status` | 离线收藏池统计 | — | `{ total, downloaded, pending, failed, progressPercent }` |
+| GET | `/api/local-audio/:songId` | 已下载离线 mp3 直出 | 路径 `songId`（可带 `.mp3`） | `audio/mpeg` 或 404 |
 
 ### 4.2 WebSocket
 
@@ -112,6 +115,7 @@
 | `now_playing` | S→C | 与 `/api/now` 对齐的当前播放态 |
 | `queue` | S→C | 队列头部预览（等价于小规模 `/api/next`） |
 | `error` | S→C | `{ "message": "...", "traceId?" }` |
+| `offline_favorite_ready` | S→C | 离线收藏下载完成：`{ "schemaVersion": 1, "ncmSongId", "title", "artist", "status": "downloaded" }`；Client 可据此刷新 UI 或切至 `/api/local-audio/` |
 
 ### 4.4 DJ 脚本 JSON（MiniMax → Server）
 
@@ -136,7 +140,7 @@
 |----|--------|--------|------|
 | P1 | 脚手架 | server/client 最小可跑、`env.example` | 构建通过、密钥不入库 |
 | P2 | 画像数据面 | `data/user/`、Schema | 校验失败可读错误 |
-| P3 | NCM Adapter | 搜索、URL、detail、lyric | Mock 离线通过 |
+| P3 | NCM Adapter | 搜索、URL、detail、lyric；**生产级：NCM Enhanced 常驻**，见 [NCM_UPSTREAM.md](./NCM_UPSTREAM.md) | 真实代理 `NCM_MOCK=0`；联调可 Mock |
 | P4 | 品味与情绪 | moodTag + explain | 夹具稳定 |
 | P5 | Context Builder | `prompts/dj-persona.md`、六片段装配 | 可脱敏 dump |
 | P6 | MiniMax Adapter | 文本 + 语音管线 | 解析降级、重试 |
@@ -192,10 +196,13 @@
 
 ## 10. 实时播放接口配置（A 部分补充）
 
+**上游长期方案**：网易云能力以 **HTTP API 代理常驻** 为主（推荐 **NeteaseCloudMusicApi Enhanced**），环境变量、运维形态、健康巡检与降级边界见专用文档 **[NCM_UPSTREAM.md](./NCM_UPSTREAM.md)**。
+
 **目标**：完善网易云实时播放到前端的完整链路，确保 `<audio>` 能直接消费服务端返回的 URL。
 
 **验收点**：
+- **生产/联调**：`NCM_API_BASE_URL` 指向可用代理；避免仅依赖「8080 起来了」而 **3000（或配置端口）未起** 的隐性失败。
 - yt-dlp 或 NCM API 返回的音频 URL 能被前端直接播放（无需用户额外配置）
-- 若使用 yt-dlp：需处理外链 CORS 或走 `/api/audio/proxy` 同源代理
-- 若使用 NCM API：需配置 `NCM_API_BASE_URL` + Cookie，验证真机播放
+- 若使用 yt-dlp：需处理外链 CORS 或走 `/api/audio/proxy` 同源代理（**补充策略**，不替代 NCM 常驻）
+- 若使用 NCM API：需配置 **`NCM_API_BASE_URL` + Cookie**（`MUSIC_U` / `NCM_UPSTREAM_COOKIE`），验证真机播放；Enhanced 场景下可按其文档使用 **`randomCNIP` / `realIP` / `proxy=`** 缓解地区与线路问题。
 - 接口层：`/api/now` 返回的 `url` / `proxiedUrl` 字段需与前端 `main.ts` 消费逻辑对齐

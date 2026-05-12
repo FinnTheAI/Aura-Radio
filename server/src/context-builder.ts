@@ -157,6 +157,15 @@ export function assembleContext(input: {
   includeCloudTaste?: boolean;
   /** 由 song-candidates 模块格式化的 `# songCandidates` 正文（建议始终注入） */
   songCandidatesPrompt?: string;
+  /** 是否为下一首自动接续模式（一曲播毕后自动接歌） */
+  segmentNextTrack?: boolean;
+  /** 上一首完成的歌曲信息（用于衔接口播） */
+  lastFinishedSong?: {
+    title?: string;
+    artist?: string;
+    ncmSongId?: string;
+    moodTag?: string;
+  };
 }): ContextFragments {
   const now = input.now ?? new Date();
   const traceSeed = randomUUID();

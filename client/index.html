@@ -12,11 +12,18 @@
     <audio id="player" playsinline preload="none"></audio>
     <div id="hud">
       <button id="boot" type="button">触碰以唤醒播放</button>
+      <div id="mode-bar" class="mode-bar">
+        <span id="mode-status" class="mode-status">播放模式：…</span>
+        <button id="mode-toggle" type="button" class="hud-btn">切换在线 / 离线…</button>
+      </div>
       <button id="new-segment" type="button" class="hud-btn">换一段</button>
       <div id="chat-row">
         <input id="chat-input" type="text" placeholder="说点什么..." />
         <button id="chat-send" type="button" class="hud-btn">发送</button>
       </div>
+      <div id="pipeline-status" class="pipeline-status" hidden aria-live="polite"></div>
+      <div id="dj-announce" class="dj-announce" hidden aria-live="polite"></div>
+      <div id="dj-speaking" class="dj-speaking" hidden aria-live="polite">DJ 播报中…</div>
       <button id="force-play" type="button" class="hud-btn" hidden>点此出声</button>
       <div id="meta" aria-live="polite"></div>
     </div>

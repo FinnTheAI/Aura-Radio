@@ -104,6 +104,24 @@ export async function getNcmSongUrl(ncmSongId: string): Promise<{ url: string; d
   }
 }
 
+/** 仅用 yt-dlp 提取歌曲元数据（歌名+歌手），用于 NCM API 不可用时的文件命名兜底。 */
+export async function getNcmSongMetaFromYtDlp(
+  ncmSongId: string,
+): Promise<{ title: string; artist: string } | null> {
+  try {
+    const data = await execYtDlp(
+      ['--dump-json', '--no-playlist', '--', `https://music.163.com/song?id=${ncmSongId}`],
+      { timeoutMs: 12_000 },
+    );
+    const title = data.title?.trim();
+    const artist = data.creator?.trim() || data.album_artist?.trim();
+    if (!title) return null;
+    return { title, artist: artist || '未知艺人' };
+  } catch {
+    return null;
+  }
+}
+
 /** Mock NCM 模式下的占位可播 URL（不经 yt-dlp）。 */
 export function mockNcmPlayableFallback(): { url: string; durationMs: number } {
   return {

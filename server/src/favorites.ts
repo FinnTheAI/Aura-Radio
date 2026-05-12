@@ -11,6 +11,7 @@ import { config } from './config.js';
 import { log } from './logger.js';
 import type { ContextFragments } from './context-builder.js';
 import type { DjScript } from './types.js';
+import type { StreamHub } from './stream-hub.js';
 import { deriveSessionMood } from './taste-mood.js';
 import {
   offlineFavoriteUpsertPending,
@@ -20,6 +21,7 @@ import {
   offlineFavoriteCountDownloaded,
   offlineFavoriteMarkDownloaded,
   offlineFavoriteMarkFailed,
+  offlineFavoritesStatusSnapshot,
   getDb,
 } from './db.js';
 import { ncmSongDetail, ncmSongUrl } from './ncma.js';
@@ -99,8 +101,30 @@ async function fetchToFile(downloadUrl: string, destFsPath: string): Promise<voi
   }
 }
 
-async function downloadOfflineFavorite(ncmSongId: string): Promise<void> {
+function broadcastOfflineReady(
+  stream: StreamHub | undefined,
+  ncmSongId: string,
+  title: string,
+  artist: string,
+) {
+  if (!stream) return;
+  try {
+    stream.broadcast({
+      type: 'offline_favorite_ready',
+      schemaVersion: 1,
+      ncmSongId,
+      title,
+      artist,
+      status: 'downloaded',
+    });
+  } catch {
+    /** */
+  }
+}
+
+async function downloadOfflineFavorite(ncmSongId: string, stream?: StreamHub): Promise<void> {
   ensureDownloadsDir();
+  const before = offlineFavoriteGet(ncmSongId);
   const meta = await ncmSongDetail(ncmSongId).catch(() => ({ name: '', artists: [] as string[] }));
   const songName = meta.name ?? '';
   const artistStr = (meta.artists ?? []).join(' / ');
@@ -108,13 +132,13 @@ async function downloadOfflineFavorite(ncmSongId: string): Promise<void> {
 
   if (fs.existsSync(destPath) && fs.statSync(destPath).size > 10_000) {
     /** 已有可读文件则不重复下载 */
-    const row = offlineFavoriteGet(ncmSongId);
-    if (row?.status !== 'downloaded') {
+    if (before?.status !== 'downloaded') {
       offlineFavoriteMarkDownloaded(ncmSongId, {
         title: songName || '网易云',
         artist: artistStr || '',
         filename: path.basename(destPath),
       });
+      broadcastOfflineReady(stream, ncmSongId, songName || '网易云', artistStr || '');
     }
     return;
   }
@@ -134,6 +158,7 @@ async function downloadOfflineFavorite(ncmSongId: string): Promise<void> {
     });
 
     log.info('offline favorite downloaded', { ncmSongId, path: destPath });
+    broadcastOfflineReady(stream, ncmSongId, songName || '网易云', artistStr || '');
   } catch (e) {
     const msg = String(e);
     offlineFavoriteMarkFailed(ncmSongId, msg.slice(0, 2000));
@@ -141,8 +166,8 @@ async function downloadOfflineFavorite(ncmSongId: string): Promise<void> {
   }
 }
 
-export function scheduleOfflineDownload(ncmSongId: string): void {
-  void downloadOfflineFavorite(ncmSongId).catch((err) =>
+export function scheduleOfflineDownload(ncmSongId: string, stream?: StreamHub): void {
+  void downloadOfflineFavorite(ncmSongId, stream).catch((err) =>
     log.error('offline download unexpected', { ncmSongId, err: String(err) }),
   );
 }
@@ -196,7 +221,9 @@ export function tryOfflineFallbackDjScript(_fragments: ContextFragments): DjScri
   if (offlineFavoriteCountDownloaded() < 1) return null;
   const row = offlineFavoritePickRandomDownloaded();
   if (!row) return null;
-  const fp = getOfflineMp3Path(row.ncm_song_id);
+  const fp = row.filename
+    ? path.join(getDownloadsDir(), row.filename)
+    : getOfflineMp3Path(row.ncm_song_id);
   if (!fs.existsSync(fp) || fs.statSync(fp).size < 1024) return null;
 
   const session = deriveSessionMood();
@@ -216,7 +243,11 @@ export function tryOfflineFallbackDjScript(_fragments: ContextFragments): DjScri
   };
 }
 
-export function registerOfflineFavoriteRoutes(app: Express): void {
+export function registerOfflineFavoriteRoutes(app: Express, stream: StreamHub): void {
+  app.get('/api/favorites/status', (_req, res) => {
+    res.json(offlineFavoritesStatusSnapshot());
+  });
+
   app.post('/api/favorite', (req, res) => {
     const raw = typeof req.body?.ncmSongId === 'string' ? req.body.ncmSongId : '';
     const id = sanitizeNcmSongId(raw);
@@ -225,7 +256,7 @@ export function registerOfflineFavoriteRoutes(app: Express): void {
       return;
     }
     const { queuedDownload } = offlineFavoriteUpsertPending(id);
-    if (queuedDownload) scheduleOfflineDownload(id);
+    if (queuedDownload) scheduleOfflineDownload(id, stream);
 
     const row = offlineFavoriteGet(id);
     let message = '已加入离线曲库（后台下载中）';

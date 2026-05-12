@@ -5,8 +5,12 @@ import { buildExpressApp } from './express-app.js';
 import { log } from './logger.js';
 import { QueueEngine } from './queue-engine.js';
 import { StreamHub } from './stream-hub.js';
+import { warmupClaudeCli } from './brain.js';
 
-export function bootstrap() {
+export async function bootstrap() {
+  // 预热 Claude CLI（减少首次用户请求延迟）
+  await warmupClaudeCli();
+  
   const streamHub = new StreamHub();
   const queue = new QueueEngine(streamHub);
   queue.start();

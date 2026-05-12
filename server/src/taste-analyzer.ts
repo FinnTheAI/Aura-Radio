@@ -10,6 +10,10 @@ export interface CloudTasteAnalysis {
   historyRows: number;
   /** 红心 + 收藏歌单曲目上的艺人频次（听歌习惯主轴） */
   artistsTop10: { name: string; count: number }[];
+  /** 艺人频次 Top30 */
+  artistsTop30: { name: string; count: number; shareOfArtistMentions: string }[];
+  /** 艺人频次 Top100 */
+  artistsTop100: { name: string; count: number; shareOfArtistMentions: string }[];
   /** 近似「风格标签」快照（专辑 tags、Enhanced 可选标签、歌单来源等）；后续可再接专用曲风 API */
   genreTagDistribution: Record<string, number>;
   /** @deprecated 同 genreTagDistribution，保留兼容别名 */
@@ -103,7 +107,16 @@ export function analyzeCloudTasteFromDb(): CloudTasteAnalysis {
   const histCount = hist.length;
 
   const artistMap = artistCountsFromFavorites(favs);
+  const artistMentionTotal = [...artistMap.values()].reduce((a, b) => a + b, 0);
   const artistsTop10 = topN(artistMap, 10);
+  const artistsTop30 = topN(artistMap, 30).map((row) => ({
+    ...row,
+    shareOfArtistMentions: `${((row.count / artistMentionTotal) * 100).toFixed(1)}%`,
+  }));
+  const artistsTop100 = topN(artistMap, 100).map((row) => ({
+    ...row,
+    shareOfArtistMentions: `${((row.count / artistMentionTotal) * 100).toFixed(1)}%`,
+  }));
   const tagMap = tagCounts(favs, hist);
   const tagDistribution = Object.fromEntries(topN(tagMap, 40).map((x) => [x.name, x.count]));
 
@@ -148,6 +161,8 @@ export function analyzeCloudTasteFromDb(): CloudTasteAnalysis {
     favoritesRows: favCount,
     historyRows: histCount,
     artistsTop10,
+    artistsTop30,
+    artistsTop100,
     genreTagDistribution: { ...tagDistribution },
     tagDistribution: { ...tagDistribution },
     hourlyListening,

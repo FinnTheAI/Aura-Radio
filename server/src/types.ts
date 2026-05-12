@@ -5,6 +5,7 @@ export type QueueKind = 'music' | 'voice' | 'idle';
 export interface PlayInstruction {
   ncmSongId: string;
   reason: string;
+  discoveryNote?: string;
 }
 
 export interface DjScript {
@@ -28,6 +29,10 @@ export interface QueueItem {
   minimaxClipId?: string;
   moodTag: MoodTag;
   traceId?: string;
+  /** 口播文本（TTS 失败降级时由服务端填入） */
+  sayText?: string;
+  /** 离线等模式下的大字 DJ 播报（无语音） */
+  djText?: string;
 }
 
 export interface NowPlaying {
@@ -43,4 +48,8 @@ export interface NowPlaying {
   minimaxClipId?: string;
   ncmSongId?: string;
   traceId?: string;
+  /** 口播文本（TTS 失败降级时由服务端填入） */
+  sayText?: string;
+  /** 离线等模式下的大字 DJ 播报（无语音） */
+  djText?: string;
 }

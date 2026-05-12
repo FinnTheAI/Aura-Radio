@@ -300,6 +300,15 @@ export async function resolvePlayFromDiscovery(
       } catch { /** */ }
     }
 
+    /**
+     * Brain 给出的网易云数字曲 ID 可直接入队，不要求出现在「当日候选池」白名单里；
+     * 否则会误判为空队列 → `/api/now` 长期 idle、前端无音频。
+     */
+    if (/^\d+$/.test(p.ncmSongId) && p.ncmSongId !== '0' && !exclude.has(p.ncmSongId)) {
+      resolved.push({ ncmSongId: p.ncmSongId, reason: p.reason });
+      continue;
+    }
+
     // fallback：检查预建候选池
     const allowed = new Set(candidates.map(c => c.ncmSongId));
     if (allowed.has(p.ncmSongId) && !exclude.has(p.ncmSongId)) {
@@ -313,6 +322,34 @@ export async function resolvePlayFromDiscovery(
         reason: `[候选修正] ${p.ncmSongId} 不可用，fallback《${fallback.title}》- ${fallback.artists.join('/')}`,
       });
     }
+  }
+
+  /** discoveryNote / Brain ID 均不可用且候选池为空时的最后一道防线 */
+  if (resolved.length === 0 && play.length > 0) {
+    const p0 = play[0]!;
+    const kw =
+      (p0.discoveryNote ?? '').trim().slice(0, 120) ||
+      (p0.reason ?? '').trim().slice(0, 120) ||
+      'ambient instrumental calm';
+    try {
+      const songs = await ncmSearch(kw, 12);
+      const pick = songs.find(s => !exclude.has(s.id));
+      if (pick) {
+        resolved.push({
+          ncmSongId: pick.id,
+          reason: `[紧急搜索] ${p0.reason}`,
+        });
+      }
+    } catch {
+      /** */
+    }
+  }
+
+  if (resolved.length === 0 && play.length > 0) {
+    resolved.push({
+      ncmSongId: '4017469',
+      reason: '[内置兜底] Something About Us — 解析与搜索均失败时的占位曲（请检查 NCM 代理）',
+    });
   }
 
   return resolved;

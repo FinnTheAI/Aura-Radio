@@ -169,7 +169,7 @@ function tryNotifyPipelineOurSegmentPlaying(np: NowPlaying): void {
 
 function finishPipelineIfHeadIsNotOurRequest(requestTraceId: string | undefined, np: NowPlaying | undefined) {
   if (!pipelineAwaitingMusic || !requestTraceId) return;
-  if (!np || np.traceId === requestTraceId) return;
+  if (!np || np.type === 'idle' || !np.traceId || np.traceId === requestTraceId) return;
   pipelineAwaitingMusic = false;
   pipelineExpectedTraceId = undefined;
   clearPipelineSafetyTimer();
@@ -420,7 +420,8 @@ async function pullNowAndPlay(chatTraceId?: string): Promise<NowPlaying | undefi
   if (!res.ok) return;
   const np = (await res.json()) as NowPlaying;
   await enqueueHydrateFromNow(np);
-  if (chatTraceId && chatTraceId !== np.traceId) {
+  // idle 无 traceId，不能与本次请求的 trace 比较；此前会误报「仍是上一段」与「新对话已排队」
+  if (chatTraceId && np.type !== 'idle' && np.traceId && chatTraceId !== np.traceId) {
     metaEl.textContent +=
       '\n提示：当前播放仍是上一段节目（trace 与本次请求不同）。若刚发送过对话，新内容通常在队列中，当前曲结束会接入口播。';
   }
@@ -464,6 +465,8 @@ function runSilentGesturePrimeOnce() {
   if (!didSilentGesturePrime) {
     didSilentGesturePrime = true;
     try {
+      delete audioEl.dataset.auraTrace;
+      delete audioEl.dataset.auraKind;
       audioEl.muted = true;
       audioEl.src = SILENT_WAV;
       void audioEl.play();

@@ -150,7 +150,12 @@ export function buildExpressApp(queue: QueueEngine, stream: StreamHub) {
         log.info('/api/chat used MiniMax HTTP instead of local Claude CLI', { traceId });
       }
 
-      // 通过 discoveryNote → NCM 搜索解析真实 ncmSongId（修复 "0" 占位），排除当前在播曲
+      if (!Array.isArray(rawScript.play) || rawScript.play.length === 0) {
+        return res.status(503).json({
+          error: 'DJ 脚本未包含可播放曲目（play 为空），请重试或检查 Brain 配置。',
+          traceId,
+        });
+      }
       const excludeIds = nowPlaying.type !== 'idle' && nowPlaying.ncmSongId ? [nowPlaying.ncmSongId] : [];
       const resolved = await resolvePlayFromDiscovery(rawScript.play, candidates, excludeIds);
       const script = { ...rawScript, play: resolved };

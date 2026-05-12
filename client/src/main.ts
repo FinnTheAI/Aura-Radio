@@ -11,6 +11,7 @@ interface NowPlaying {
   djText?: string;
   sayText?: string;
   ncmSongId?: string;
+  durationMs?: number;
 }
 
 type PlaybackMode = 'online' | 'offline';
@@ -43,6 +44,8 @@ const PIPELINE_SAFETY_TIMEOUT_MS = 180_000;
 
 let suppressWsNowPlaying = 0;
 let blockMusicWsWhileVoiceHydrated = false;
+/** 口播时长估算偏短时，仍阻挡 music WS，直到 hydrate music 或超时 */
+let voiceWsBlockTimer: ReturnType<typeof setTimeout> | undefined;
 let pipelineAwaitingMusic = false;
 let pipelineExpectedTraceId: string | undefined;
 let pipelineSafetyTimer: ReturnType<typeof setTimeout> | undefined;
@@ -50,6 +53,25 @@ let playbackMode: PlaybackMode = 'online';
 
 function setDjSpeakingVisible(on: boolean) {
   djSpeakingEl.hidden = !on;
+}
+
+function clearVoiceMusicWsBlock() {
+  blockMusicWsWhileVoiceHydrated = false;
+  if (voiceWsBlockTimer) {
+    clearTimeout(voiceWsBlockTimer);
+    voiceWsBlockTimer = undefined;
+  }
+}
+
+/** 口播播放期间阻挡「仅 WS 推送的 music」打断；music 正式 hydrate 时 clear */
+function armVoiceMusicWsBlock(durationMs?: number) {
+  clearVoiceMusicWsBlock();
+  blockMusicWsWhileVoiceHydrated = true;
+  const base = typeof durationMs === 'number' && durationMs > 500 ? durationMs : 120_000;
+  voiceWsBlockTimer = window.setTimeout(() => {
+    voiceWsBlockTimer = undefined;
+    blockMusicWsWhileVoiceHydrated = false;
+  }, Math.min(base + 8000, 900_000));
 }
 
 const SILENT_WAV =
@@ -285,6 +307,8 @@ async function hydrateFromNow(np: NowPlaying) {
   const playRaw = np.proxiedUrl ?? np.url;
   const key = `${np.traceId}:${np.title}:${normalizeUrl(playRaw)}`;
   if (!playRaw) {
+    clearVoiceMusicWsBlock();
+    setDjSpeakingVisible(false);
     metaEl.textContent =
       `${np.type} · ${np.moodTag ?? ''}` + (np.title ? ` · ${np.title}` : '') + '\n暂无可播放音频 URL。';
     setForcePlayVisible(false);
@@ -295,6 +319,9 @@ async function hydrateFromNow(np: NowPlaying) {
     `${np.type} · ${np.moodTag ?? ''}${np.title ? ` · ${np.title}` : ''}${np.artist ? ` — ${np.artist}` : ''}` +
     (np.ncmSongId ? ` · ncm:${np.ncmSongId}` : '') +
     `\ntrace:${np.traceId ?? '—'}`;
+  if (np.type === 'voice' && np.sayText?.trim()) {
+    metaEl.textContent += `\n口播文案：${np.sayText.trim()}`;
+  }
 
   if (np.type === 'music' || np.type === 'voice') {
     tryNotifyPipelineOurSegmentPlaying(np);
@@ -302,6 +329,14 @@ async function hydrateFromNow(np: NowPlaying) {
 
   audioEl.dataset.auraKind = np.type;
   if (np.traceId) audioEl.dataset.auraTrace = np.traceId;
+
+  if (np.type === 'voice') {
+    armVoiceMusicWsBlock(np.durationMs);
+    setDjSpeakingVisible(true);
+  } else {
+    clearVoiceMusicWsBlock();
+    setDjSpeakingVisible(false);
+  }
 
   // 收藏按钮：仅在播放 music 且有有效 ncmSongId 时显示
   if (np.type === 'music' && np.ncmSongId && /^\d+$/.test(np.ncmSongId)) {
@@ -468,7 +503,8 @@ async function djSpeechThenPullNow(
   suppressWsNowPlaying++;
   try {
     await speakDjScriptSay(undefined);
-    await pullNowAndPlay(traceId);
+    const np = await pullNowAndPlay(traceId);
+    finishPipelineIfHeadIsNotOurRequest(traceId, np);
   } finally {
     suppressWsNowPlaying--;
   }
@@ -713,6 +749,17 @@ if ('speechSynthesis' in window) {
 }
 
 void refreshPlaybackMode();
+
+audioEl.addEventListener('ended', () => {
+  const traceId = audioEl.dataset.auraTrace;
+  const kind = audioEl.dataset.auraKind;
+  if (!traceId || (kind !== 'voice' && kind !== 'music')) return;
+  void fetch('/api/queue/advance', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ traceId }),
+  }).catch(() => undefined);
+});
 
 audioEl.addEventListener('error', () => {
   const err = audioEl.error;

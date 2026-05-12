@@ -22,6 +22,12 @@ describe('HTTP contract (ARCH_DOC / CONTRACT.yaml)', () => {
     expect(res.body.ok).toBe(true);
   });
 
+  it('POST /api/queue/advance when idle', async () => {
+    const res = await request(app).post('/api/queue/advance').send({ traceId: 'any-id' }).expect(200);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.reason).toBe('no_active');
+  });
+
   it('GET /api/plan/today', async () => {
     const res = await request(app).get('/api/plan/today').set('X-Timezone', 'Asia/Shanghai').expect(200);
     expect(Array.isArray(res.body.blocks)).toBe(true);

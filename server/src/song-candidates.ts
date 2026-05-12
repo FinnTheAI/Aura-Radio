@@ -261,8 +261,10 @@ export async function buildSongCandidatesFromNCM(_cloudTaste?: string): Promise<
 export async function resolvePlayFromDiscovery(
   play: Array<{ ncmSongId: string; reason: string; discoveryNote?: string }>,
   candidates: SongCandidate[],
+  excludeIds?: string[],
 ): Promise<Array<{ ncmSongId: string; reason: string; discoveryNote?: string }>> {
   const resolved: Array<{ ncmSongId: string; reason: string; discoveryNote?: string }> = [];
+  const exclude = new Set(excludeIds?.filter(id => id && /^\d+$/.test(id)) ?? []);
 
   for (const p of play) {
     if (p.discoveryNote?.startsWith(OFFLINE_DISCOVERY_PREFIX)) {
@@ -284,11 +286,15 @@ export async function resolvePlayFromDiscovery(
     }
 
     if (p.discoveryNote) {
-      // 从 discoveryNote 提取关键词搜索 NCM
       try {
-        const songs = await ncmSearch(p.discoveryNote, 3);
-        if (songs.length > 0) {
-          resolved.push({ ncmSongId: songs[0]!.id, reason: p.reason });
+        // 请求多取几条，避开排除项后仍能落到有效结果
+        const fetchCount = exclude.size > 0 ? Math.max(10, exclude.size + 5) : 5;
+        const songs = await ncmSearch(p.discoveryNote, fetchCount);
+        const pool = songs.filter(s => !exclude.has(s.id));
+        const pick =
+          pool.length > 0 ? pool[Math.floor(Math.random() * pool.length)] : songs.find(s => !exclude.has(s.id));
+        if (pick) {
+          resolved.push({ ncmSongId: pick.id, reason: p.reason });
           continue;
         }
       } catch { /** */ }
@@ -296,13 +302,15 @@ export async function resolvePlayFromDiscovery(
 
     // fallback：检查预建候选池
     const allowed = new Set(candidates.map(c => c.ncmSongId));
-    if (allowed.has(p.ncmSongId)) {
+    if (allowed.has(p.ncmSongId) && !exclude.has(p.ncmSongId)) {
       resolved.push({ ncmSongId: p.ncmSongId, reason: p.reason });
     } else if (candidates.length > 0) {
-      const first = candidates[0]!;
+      const pool = candidates.filter(c => !exclude.has(c.ncmSongId));
+      const fallback =
+        pool.length > 0 ? pool[Math.floor(Math.random() * pool.length)] : candidates[Math.floor(Math.random() * candidates.length)]!;
       resolved.push({
-        ncmSongId: first.ncmSongId,
-        reason: `[候选修正] ${p.ncmSongId} 不可用，fallback《${first.title}》- ${first.artists.join('/')}`,
+        ncmSongId: fallback.ncmSongId,
+        reason: `[候选修正] ${p.ncmSongId} 不可用，fallback《${fallback.title}》- ${fallback.artists.join('/')}`,
       });
     }
   }

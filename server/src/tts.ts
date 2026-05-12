@@ -11,8 +11,8 @@ export interface TtsResult {
   voiceId: string;
 }
 
-// 本地缓存目录
-const TTS_CACHE_DIR = join(process.cwd(), 'data', 'tts-cache');
+// 本地缓存目录（与 `/api/tts/audio`、express-app 一致）
+const TTS_CACHE_DIR = join(config.dataDir, 'tts-cache');
 
 function ensureCacheDir() {
   if (!existsSync(TTS_CACHE_DIR)) {

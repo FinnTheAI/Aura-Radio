@@ -29,6 +29,9 @@ export class QueueEngine {
   private active: Active | null = null;
   private lastMood: MoodTag = 'neutral';
   private timer: NodeJS.Timeout | null = null;
+  /** 浏览器 `<audio ended>` 与远端 tick 可能紧邻触发；防抖避免跳两段 */
+  private lastClientEndedAt = 0;
+  private lastClientEndedTrace = '';
   private readonly stream: StreamHub;
 
   constructor(stream: StreamHub) {
@@ -77,9 +80,37 @@ export class QueueEngine {
       return;
     }
     const elapsed = Date.now() - this.active.startedAt;
-    if (elapsed >= this.active.item.durationMs) {
+    const softMs = Math.max(1500, this.active.item.durationMs);
+    /** 不以服务端估算时长为准切换（口播 / URL duration 常偏短）；仅卡死恢复 */
+    const hardMs = Math.max(softMs * 8, softMs + 240_000, 720_000);
+    if (elapsed >= hardMs) {
+      log.warn('queue advance: stuck recovery (hard timeout)', {
+        kind: this.active.item.kind,
+        elapsedMs: elapsed,
+        durationMs: this.active.item.durationMs,
+      });
       this.advance();
     }
+  }
+
+  /** 客户端播放 natural ended → 与队列对齐前进一格（voice/music）。 */
+  reportPlaybackEnded(clientTraceId?: string): { ok: boolean; reason?: string } {
+    if (!this.active) {
+      if (this.pending.length) this.popNext();
+      return { ok: false, reason: 'no_active' };
+    }
+    const curTrace = this.active.traceId;
+    if (clientTraceId && curTrace && clientTraceId !== curTrace) {
+      return { ok: false, reason: 'trace_mismatch' };
+    }
+    const now = Date.now();
+    if (curTrace && curTrace === this.lastClientEndedTrace && now - this.lastClientEndedAt < 450) {
+      return { ok: false, reason: 'debounced' };
+    }
+    this.lastClientEndedAt = now;
+    this.lastClientEndedTrace = curTrace ?? '';
+    this.advance();
+    return { ok: true };
   }
 
   peek(limit: number): QueueItem[] {
@@ -109,6 +140,8 @@ export class QueueEngine {
       minimaxClipId: item.minimaxClipId,
       ncmSongId: item.ncmSongId,
       traceId,
+      sayText: item.sayText,
+      djText: item.djText,
     });
   }
 

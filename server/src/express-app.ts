@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import express from 'express';
 import cors from 'cors';
@@ -51,6 +52,19 @@ export function buildExpressApp(queue: QueueEngine, stream: StreamHub) {
   /* 启动时清理：DB 标记已下载、但文件缺失的离线收藏行 */
   try { cleanupOfflineFavoritesOrphans(); } catch { /* */ }
 
+  const TTS_CACHE_DIR = path.join(config.dataDir, 'tts-cache');
+  app.get('/api/tts/audio/:filename', (req, res) => {
+    const filename = req.params.filename ?? '';
+    if (!filename || filename.includes('..') || /[/\\]/.test(filename)) {
+      return res.status(400).json({ error: 'invalid filename' });
+    }
+    const fp = path.join(TTS_CACHE_DIR, filename);
+    if (!fs.existsSync(fp)) return res.status(404).json({ error: 'not found' });
+    res.setHeader('Content-Type', 'audio/mpeg');
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.sendFile(fp);
+  });
+
   app.get('/health', (_req, res) => {
     res.json({ ok: true });
   });
@@ -68,12 +82,13 @@ export function buildExpressApp(queue: QueueEngine, stream: StreamHub) {
       const skipCandidateBuild = process.env.AURA_SKIP_NCM_CANDIDATES === '1';
       const candidates = skipCandidateBuild ? [] : await buildSongCandidatesFromNCM();
       const songCandidatesPrompt = formatCandidatesForPrompt(candidates);
+      const nowPlaying = queue.getNow();
       const fragments = assembleContext({
         user,
         userText: text,
         now: new Date(),
         timezone: typeof req.headers['x-timezone'] === 'string' ? req.headers['x-timezone'] : undefined,
-        nowPlaying: queue.getNow(),
+        nowPlaying,
         songCandidatesPrompt,
       });
 
@@ -135,8 +150,9 @@ export function buildExpressApp(queue: QueueEngine, stream: StreamHub) {
         log.info('/api/chat used MiniMax HTTP instead of local Claude CLI', { traceId });
       }
 
-      // 通过 discoveryNote → NCM 搜索解析真实 ncmSongId（修复 "0" 占位）
-      const resolved = await resolvePlayFromDiscovery(rawScript.play, candidates);
+      // 通过 discoveryNote → NCM 搜索解析真实 ncmSongId（修复 "0" 占位），排除当前在播曲
+      const excludeIds = nowPlaying.type !== 'idle' && nowPlaying.ncmSongId ? [nowPlaying.ncmSongId] : [];
+      const resolved = await resolvePlayFromDiscovery(rawScript.play, candidates, excludeIds);
       const script = { ...rawScript, play: resolved };
 
       persistAssistantJson(JSON.stringify({ script, normalized, usedFallback }), traceId);
@@ -312,6 +328,15 @@ export function buildExpressApp(queue: QueueEngine, stream: StreamHub) {
     stream.broadcast({ type: 'now_playing', payload: queue.getNow() });
     stream.broadcast({ type: 'queue', items: queue.peek(8) });
     res.json({ ok: r.ok, newHead: r.newHead });
+  });
+
+  app.post('/api/queue/advance', (req, res) => {
+    const traceId =
+      typeof req.body?.traceId === 'string' && req.body.traceId.trim() ? req.body.traceId.trim() : undefined;
+    const out = queue.reportPlaybackEnded(traceId);
+    stream.broadcast({ type: 'now_playing', payload: queue.getNow() });
+    stream.broadcast({ type: 'queue', items: queue.peek(8) });
+    res.json(out);
   });
 
   if (process.env.DEBUG_CONTEXT === '1') {

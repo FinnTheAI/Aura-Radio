@@ -710,8 +710,15 @@ ws.addEventListener('message', async (ev) => {
       if (!npRaw || !npRaw.type) return;
       const np = npRaw;
 
-      // Voice 期间不 hydrate music（避免口播被音乐覆盖）
-      if (np.type === 'music' && blockMusicWsWhileVoiceHydrated) return;
+      // 仅在客户端仍在播放 voice（未 ended）时丢弃 music WS；避免口播已结束但阻挡定时器未到期时饿死音乐 hydrate
+      if (
+        np.type === 'music' &&
+        blockMusicWsWhileVoiceHydrated &&
+        audioEl.dataset.auraKind === 'voice' &&
+        !audioEl.ended
+      ) {
+        return;
+      }
 
       // 如果当前正在播 music（未暂停/未结束）且 WS 推的是同 trace 的 voice，忽略
       if (
@@ -757,11 +764,22 @@ audioEl.addEventListener('ended', () => {
   const traceId = audioEl.dataset.auraTrace;
   const kind = audioEl.dataset.auraKind;
   if (!traceId || (kind !== 'voice' && kind !== 'music')) return;
-  void fetch('/api/queue/advance', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ traceId }),
-  }).catch(() => undefined);
+
+  clearVoiceMusicWsBlock();
+  if (kind === 'voice') setDjSpeakingVisible(false);
+
+  void (async () => {
+    try {
+      const res = await fetch('/api/queue/advance', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ traceId }),
+      });
+      if (res.ok) await pullNowAndPlay();
+    } catch {
+      /** */
+    }
+  })();
 });
 
 audioEl.addEventListener('error', () => {

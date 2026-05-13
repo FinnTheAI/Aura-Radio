@@ -40,6 +40,7 @@
 │  • WebSocket 实时同步                                        │
 └─────────────────────────────────────────────────────────────┘
 ```
+<img width="941" height="1672" alt="ChatGPT Image 2026年5月13日 13_33_06" src="https://github.com/user-attachments/assets/88bddf42-68c4-45b0-b767-6761d01f17df" />
 
 ## 🚀 快速开始
 

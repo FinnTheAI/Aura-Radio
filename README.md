@@ -146,18 +146,6 @@ PARTICLE_STYLE=additive    # additive / normal
 
 详见 [docs/NCM_UPSTREAM.md](docs/NCM_UPSTREAM.md)
 
-## 🤝 贡献指南
-
-1. Fork 本仓库
-2. 创建分支：`git checkout -b feat/your-feature`
-3. 提交更改：`git commit -m "feat: your feature"`
-4. 推送分支：`git push origin feat/your-feature`
-5. 提交 PR
-
-## 📜 许可证
-
-MIT License © 2026 Aura Radio Contributors
-
 ## 🙏 致谢
 
 - [Claudio 施工图](https://mmguo.dev/claudio-fm/) - 架构灵感来源

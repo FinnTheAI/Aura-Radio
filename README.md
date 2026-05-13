@@ -148,7 +148,7 @@ PARTICLE_STYLE=additive    # additive / normal
 
 ## 🙏 致谢
 
-- [Claudio 施工图](https://mmguo.dev/claudio-fm/) - 架构灵感来源
+- [Claudio_施工图_mmguo](https://mmguo.dev/claudio-fm/) - 架构灵感来源
 - [NeteaseCloudMusicApi](https://github.com/Binaryify/NeteaseCloudMusicApi) - 网易云 API
 - [MiniMax](https://www.minimaxi.com/) - AI 文案生成
 - [Three.js](https://threejs.org/) - WebGL 渲染

@@ -1,12 +1,9 @@
-> 个人 AI 电台 · 读懂听歌习惯 · 规划声音 · 像 DJ 那样播报
+> 个人 AI 电台 · 读懂听歌习惯 · 规划声音 · 让 AI 成为最懂你的私人 DJ。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-green)](https://nodejs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0%2B-blue)](https://www.typescriptlang.org/)
 <img width="3696" height="1574" alt="拼图" src="https://github.com/user-attachments/assets/70909ec0-2260-4c14-8544-f845c024657f" />
-
-让 AI 成为最懂你的私人 DJ。
-![Architecture](docs/assets/architecture.png)
 
 ## ✨ 核心特性
 

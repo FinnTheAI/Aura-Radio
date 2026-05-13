@@ -85,7 +85,7 @@ npm run dev:client   # 端口 5173
 
 ### 5. 打开浏览器
 
-访问 http://localhost:5173，点击「触碰以唤醒播放」。
+本地访问 http://localhost:5173，点击「触碰以唤醒播放」。
 
 ## 📁 项目结构
 
